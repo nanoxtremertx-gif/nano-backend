@@ -414,20 +414,3 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=port)
 ```
 
----
-
-### 2. Sube el Arreglo a GitHub
-
-Ahora, solo tienes que hacer lo que te dije antes. En tu terminal (dentro de `D:\NANO-BACKEND`):
-
-**Paso 1: Guarda el cambio (Commit)**
-
-```powershell
-git add .
-git commit -m "Corregir error de sintaxis en la línea 392"
-```
-
-**Paso 2: Sube el cambio (Push)**
-
-```powershell
-git push origin main
