@@ -1,5 +1,5 @@
 # --- servidor.py ---
-# (v2 - Con Health Check para UptimeRobot)
+# (v2.1 - Corregido error de sintaxis)
 
 from flask import Flask, jsonify, request, make_response, send_from_directory, abort
 from flask_cors import CORS
@@ -367,7 +367,7 @@ def check_for_updates():
     }), 200
 
 
-# --- RUTAS DE DESCARGA SIMULADA ---
+# --- RUTAS DE DESCARGA SIMULADA (AHORA COMPLETAS) ---
 @app.route('/simulated_updates/<filename>')
 def download_simulated_update(filename):
     """
@@ -389,4 +389,45 @@ print("...Proceso de actualización simulado terminado.")
 """
     response = make_response(fake_content)
     response.headers["Content-Type"] = "text/x-python-script"
-    response.headers["Content-D...
+    # --- ¡ESTA LÍNEA ESTABA INCOMPLETA! ---
+    response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+    return response
+
+@app.route('/simulated_logs/<filename>')
+def download_simulated_log(filename):
+    """
+    Simula la descarga de un log para el admin (Consola 1).
+    """
+    print(f"[DESCARGA] Admin descargando log: {filename}")
+    fake_content = f"Contenido simulado del log: {filename}\nUsuario: {filename.split('_')[1]}\n"
+    response = make_response(fake_content)
+    response.headers["Content-Type"] = "text/plain"
+    return response
+
+
+# --- Iniciar el servidor ---
+if __name__ == '__main__':
+    # El puerto lo define Render, pero 5000 es un buen default
+    port = int(os.environ.get('PORT', 5000))
+    print("Iniciando servidor Flask...")
+    # Usamos 0.0.0.0 para que sea accesible desde Render
+    app.run(host='0.0.0.0', port=port)
+```
+
+---
+
+### 2. Sube el Arreglo a GitHub
+
+Ahora, solo tienes que hacer lo que te dije antes. En tu terminal (dentro de `D:\NANO-BACKEND`):
+
+**Paso 1: Guarda el cambio (Commit)**
+
+```powershell
+git add .
+git commit -m "Corregir error de sintaxis en la línea 392"
+```
+
+**Paso 2: Sube el cambio (Push)**
+
+```powershell
+git push origin main
