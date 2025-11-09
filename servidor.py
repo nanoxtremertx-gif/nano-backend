@@ -412,5 +412,4 @@ if __name__ == '__main__':
     print("Iniciando servidor Flask...")
     # Usamos 0.0.0.0 para que sea accesible desde Render
     app.run(host='0.0.0.0', port=port)
-```
 
