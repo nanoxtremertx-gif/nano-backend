@@ -1,4 +1,4 @@
 Flask
-flask-cors
-gunicorn
+Flask-CORS
 werkzeug
+requests # Requerido si planeas testear el login/update con scripts externos
