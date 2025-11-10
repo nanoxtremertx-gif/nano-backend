@@ -1,5 +1,4 @@
 # --- servidor.py ---
-# (v2.5 - Forzando la actualización de CORS)
 # (v2.4 - Arreglo de CORS para Vercel)
 
 from flask import Flask, jsonify, request, make_response, send_from_directory, abort
