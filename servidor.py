@@ -12,10 +12,12 @@ import os
 
 # --- Configuración de Flask ---
 app = Flask(__name__)
-# --- ¡CAMBIO IMPORTANTE AQUÍ! ---
+
+# --- ¡ESTA ES LA LÍNEA QUE ARREGLA TODO! ---
 # Habilitamos CORS para todas las rutas ("/*") y todos los orígenes ("*")
 # Esto arregla el "Error de conexión" de Vercel.
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+# --- FIN DEL ARREGLO ---
 
 # --- SIMULACIÓN DE BASE DE DATOS (En Memoria) ---
 db_users = {}
