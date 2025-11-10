@@ -1,5 +1,5 @@
 # --- servidor.py ---
-# (v2.1 - Corregido error de sintaxis)
+# (v2.4 - Arreglo de CORS para Vercel)
 
 from flask import Flask, jsonify, request, make_response, send_from_directory, abort
 from flask_cors import CORS
@@ -12,7 +12,10 @@ import os
 
 # --- Configuración de Flask ---
 app = Flask(__name__)
-CORS(app) 
+# --- ¡CAMBIO IMPORTANTE AQUÍ! ---
+# Habilitamos CORS para todas las rutas ("/*") y todos los orígenes ("*")
+# Esto arregla el "Error de conexión" de Vercel.
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 # --- SIMULACIÓN DE BASE DE DATOS (En Memoria) ---
 db_users = {}
@@ -22,15 +25,13 @@ db_files = {
 db_logs_historicos = [] # Consola 1
 db_archivos_actualizacion = [] # Consola 3
 
-# --- RUTA DE HEALTH CHECK (¡NUEVA!) ---
-# Esta ruta es para que UptimeRobot y Render sepan que el servidor está vivo.
+# --- RUTA DE HEALTH CHECK (Para UptimeRobot) ---
 @app.route('/')
 def health_check():
     """
     Ruta principal que devuelve un 200 OK para los monitores de uptime.
     """
     print("[HEALTH CHECK] UptimeRobot/Render ha revisado el servidor.")
-    # Devolvemos un 200 OK con un mensaje simple
     return jsonify({"status": "online", "message": "Servidor de Nano-Backend está activo."}), 200
 
 # --- 1. ENDPOINTS DEL BACKEND WEB (Login, Registro, Subida) ---
@@ -74,6 +75,7 @@ def login_user():
     user = db_users.get(username)
 
     if not user or not check_password_hash(user['password_hash'], password):
+        print("[LOGIN] Fallido: Credenciales incorrectas para", username)
         return jsonify({"message": "Credenciales incorrectas"}), 401
 
     user_data_for_frontend = {
@@ -90,7 +92,6 @@ def login_user():
 def get_crs_author():
     """
     Endpoint de análisis forense que 'subir.jsx' espera.
-    Solo lee el archivo y devuelve el 'authorId' (fingerprint).
     """
     if 'file' not in request.files:
         print("[FORENSE] Petición sin archivo.")
@@ -134,7 +135,6 @@ def simular_analisis_crs(file_bytes):
 def upload_crs_file():
     """
     Maneja la subida de archivos CRS y realiza la verificación de autoría.
-    'subir.jsx' (vFrontend) envía: 'file', 'username', 'parentId'
     """
     if 'file' not in request.files or 'username' not in request.form or 'parentId' not in request.form:
         return jsonify({"allowed": False, "message": "Faltan datos (archivo, usuario o parentId)"}), 400
@@ -160,7 +160,6 @@ def upload_crs_file():
 
     if fingerprint_en_archivo == "NO_ID":
         print(f"[UPLOAD] Rechazado (NO_ID): {file.filename} de {username}")
-        # 'subir.jsx' maneja esto en el frontend, pero lo validamos aquí por si acaso
         return jsonify({
             "allowed": False, 
             "status": "no_id", 
@@ -202,8 +201,6 @@ def get_my_files(username):
     Devuelve la lista de archivos Y carpetas (metadata) de un usuario.
     """
     user_files = db_files.get(username, [])
-    # Filtramos por parentId (root)
-    # NOTA: En un futuro, aquí deberías pasar el 'parentId' desde el frontend
     root_items = [f for f in user_files if f.get('parentId') == 'root']
     
     print(f"[MY_FILES] {username} solicitó sus archivos (root). Se encontraron {len(root_items)}.")
@@ -213,7 +210,6 @@ def get_my_files(username):
 def create_folder():
     """
     Crea una nueva carpeta (metadata) para un usuario.
-    'subir.jsx' (vFrontend) envía: 'name', 'username', 'parentId'
     """
     data = request.json
     folder_name = data.get('name')
@@ -367,7 +363,7 @@ def check_for_updates():
     }), 200
 
 
-# --- RUTAS DE DESCARGA SIMULADA (AHORA COMPLETAS) ---
+# --- RUTAS DE DESCARGA SIMULADA ---
 @app.route('/simulated_updates/<filename>')
 def download_simulated_update(filename):
     """
@@ -389,7 +385,6 @@ print("...Proceso de actualización simulado terminado.")
 """
     response = make_response(fake_content)
     response.headers["Content-Type"] = "text/x-python-script"
-    # --- ¡ESTA LÍNEA ESTABA INCOMPLETA! ---
     response.headers["Content-Disposition"] = f"attachment; filename={filename}"
     return response
 
@@ -412,4 +407,3 @@ if __name__ == '__main__':
     print("Iniciando servidor Flask...")
     # Usamos 0.0.0.0 para que sea accesible desde Render
     app.run(host='0.0.0.0', port=port)
-
