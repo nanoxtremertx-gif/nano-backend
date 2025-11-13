@@ -1,4 +1,4 @@
-# --- servidor.py --- (v10.2 - Full Systems + RUT Visible)
+# --- servidor.py --- (v10.3 - Full Systems + File System Init)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
@@ -17,7 +17,7 @@ except ImportError:
     print("!!! WARN: Numpy no detectado.")
 
 app = Flask(__name__)
-print(">>> INICIANDO SERVIDOR MAESTRO (v10.2 - RUT Exposed) <<<")
+print(">>> INICIANDO SERVIDOR MAESTRO (v10.3 - File System Init) <<<")
 
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 bcrypt = Bcrypt(app)
@@ -105,12 +105,12 @@ def get_file_url(filename):
 
 # --- RUTAS ---
 @app.route('/')
-def health_check(): return jsonify({"status": "v10.2 ONLINE", "db": db_status}), 200
+def health_check(): return jsonify({"status": "v10.3 ONLINE", "db": db_status}), 200
 
 @app.route('/uploads/<path:filename>')
 def download_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
 
-# --- 1. AUTH ---
+# --- 1. AUTENTICACIÓN (CREA CARPETA RAÍZ AL REGISTRAR) ---
 @app.route('/api/register', methods=['POST'])
 def register():
     d = request.get_json()
@@ -122,10 +122,26 @@ def register():
         email=d.get('email'), identificador=d.get('identificador'), role="gratis",
         fingerprint=d.get('username').lower()
     )
+    
     try:
-        db.session.add(new_user); db.session.commit()
+        db.session.add(new_user)
+        
+        # --- FIX: CREAR CARPETA RAÍZ POR DEFECTO ---
+        root_folder = UserFile(
+            owner_username=d.get('username'),
+            name="Archivos de Usuario",
+            type='folder',
+            parent_id=None, # La raíz es NULL
+            size_bytes=0
+        )
+        db.session.add(root_folder)
+        # ---------------------------------------------
+        
+        db.session.commit()
         return jsonify({"message": "Registrado"}), 201
-    except Exception as e: return jsonify({"message": str(e)}), 500
+    except Exception as e: 
+        db.session.rollback()
+        return jsonify({"message": str(e)}), 500
 
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -135,13 +151,12 @@ def login():
         return jsonify({"message": "OK", "user": {"username": u.username, "email": u.email, "role": u.role, "identificador": u.identificador, "isAdmin": u.role == 'admin'}}), 200
     return jsonify({"message": "Credenciales inválidas"}), 401
 
-# --- 2. ADMIN API (PARA VIP.PY) ---
+# --- 2. ADMIN API (VIP) ---
 @app.route('/api/admin/users', methods=['GET'])
 def admin_list():
-    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "No"}), 403
+    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
     try:
         users = User.query.all()
-        # ESTA ES LA PARTE QUE NECESITA VIP.PY
         return jsonify([{
             "username": u.username, "email": u.email, "role": u.role, 
             "identificador": u.identificador, "subscriptionEndDate": u.subscription_end
@@ -171,7 +186,10 @@ def admin_delete(username):
 def get_files(username):
     try:
         files = UserFile.query.filter_by(owner_username=username).all()
-        return jsonify([{"id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id, "size": f"{f.size_bytes/1048576:.2f} MB", "path": f.storage_path} for f in files]), 200
+        return jsonify([
+            {"id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id, "size": f"{f.size_bytes/1048576:.2f} MB", "path": f.storage_path, "isPublished": f.is_published} 
+            for f in files
+        ]), 200
     except: return jsonify([]), 200
 
 @app.route('/api/upload-file', methods=['POST'])
@@ -179,10 +197,18 @@ def upload_user_file():
     try:
         if 'file' not in request.files: return jsonify({"message": "Falta archivo"}), 400
         file = request.files['file']; user_id = request.form.get('userId'); parent_id = request.form.get('parentId')
-        filename = secure_filename(file.filename); unique_name = f"{uuid.uuid4().hex[:8]}_{filename}"
-        save_path = os.path.join(UPLOAD_FOLDER, unique_name); file.save(save_path)
+        
+        user = User.query.filter_by(username=user_id).first()
+        if not user: return jsonify({"message": "Usuario inválido"}), 403
+
+        filename = secure_filename(file.filename)
+        unique_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+        save_path = os.path.join(UPLOAD_FOLDER, unique_name)
+        file.save(save_path)
+        
         file_size = os.path.getsize(save_path)
         if parent_id == 'null' or parent_id == 'undefined': parent_id = None
+        
         new_file = UserFile(owner_username=user_id, name=filename, type='file', parent_id=parent_id, size_bytes=file_size, storage_path=unique_name)
         db.session.add(new_file); db.session.commit()
         return jsonify({"message": "Subido", "newFile": {"id": new_file.id, "name": new_file.name}}), 201
@@ -194,7 +220,7 @@ def create_folder():
         d = request.get_json()
         nf = UserFile(owner_username=d.get('userId'), name=d.get('name'), type='folder', parent_id=d.get('parentId'), size_bytes=0)
         db.session.add(nf); db.session.commit()
-        return jsonify({"newFolder": {"id": nf.id, "name": nf.name}}), 201
+        return jsonify({"newFolder": {"id": nf.id, "name": nf.name, "type": "folder", "parentId": nf.parent_id}}), 201
     except Exception as e: return jsonify({"message": str(e)}), 500
 
 @app.route('/api/delete-file', methods=['DELETE'])
@@ -232,7 +258,7 @@ def inspect_crs_author():
         return jsonify({"authorId": str(author_id)}), 200
     except: return jsonify({"error": "Error"}), 500
 
-# --- 4. CONSOLAS ---
+# --- 4. CONSOLAS (Compatibilidad) ---
 @app.route('/api/logs/historical', methods=['POST', 'GET'])
 def logs(): 
     if request.method=='POST': return jsonify({"status":"OK"}), 201
@@ -240,7 +266,7 @@ def logs():
 @app.route('/api/logs/incident', methods=['POST'])
 def inc(): return jsonify({"status":"OK"}), 201
 @app.route('/api/logs/incidents', methods=['GET'])
-def incs(): return jsonify([]), 200
+def incs(): return jsonify([]), 0
 @app.route('/api/updates/check', methods=['GET'])
 def chk(): return jsonify({"message":"No updates"}), 404
 
