@@ -1,450 +1,255 @@
-# --- servidor.py -- - (v2.5 - Soporte Completo para Reportes de Incidente)
-
-from flask import Flask, jsonify, request, make_response, send_from_directory, abort
+# --- servidor.py --- (v10.0 - Hugging Face Final)
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
-from werkzeug.security import generate_password_hash, check_password_hash
+from flask_sqlalchemy import SQLAlchemy
+from flask_bcrypt import Bcrypt
+from werkzeug.utils import secure_filename
 import datetime
 import uuid
-import re
-import time
 import os
-import io
+import pickle
+from urllib.parse import urlparse, urlunparse
 
-# --- Configuración de Flask ---
+# Soporte Numpy
+try:
+    import numpy
+except ImportError:
+    print("!!! WARN: Numpy no detectado.")
+
 app = Flask(__name__)
+print(">>> INICIANDO SERVIDOR (v10.0 - Backend Maestro) <<<")
 
-# --- ¡ESTA ES LA LÍNEA QUE ARREGLA TODO! ---
-# Habilitamos CORS para todas las rutas ("/*") y todos los orígenes ("*")
-# Esto arregla el "Error de conexión" de Vercel/Next.js con el backend de Render.
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
-# --- FIN DEL ARREGLO ---
+bcrypt = Bcrypt(app)
+ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025"
 
-# --- SIMULACIÓN DE BASE DE DATOS (En Memoria) ---
-# NOTA: En un entorno de producción, esto sería una base de datos persistente (PostgreSQL, MongoDB, etc.)
-db_users = {} # Almacena usuarios {username: {hash, email, identificador}}
-db_files = {
-    # 'username': [ {metadata}, {metadata} ] # Almacena metadatos de archivos subidos por usuario
-}
-db_logs_historicos = [] # Consola 1: Logs de actividad
-db_archivos_actualizacion = [] # Consola 3: Archivos .py subidos por el admin
-db_incidentes_reportados = [] # Consola 2: Reportes de incidentes RECIBIDOS
-# ----------------------------------------------------------------------
+# --- DIRECTORIOS ---
+UPLOAD_FOLDER = os.path.join(os.getcwd(), 'uploads')
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# --- CONEXIÓN DB ---
+db_status = "Desconocido"
+try:
+    raw_url = os.environ.get('NEON_URL')
+    if not raw_url:
+        app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
+        db_status = "SQLite (TEMPORAL)"
+    else:
+        parsed = urlparse(raw_url)
+        scheme = 'postgresql' if parsed.scheme == 'postgres' else parsed.scheme
+        clean_url = urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).strip("'").strip()
+        if 'postgresql' in clean_url and 'sslmode' not in clean_url:
+             clean_url += "?sslmode=require"
+        app.config['SQLALCHEMY_DATABASE_URI'] = clean_url
+        db_status = "Neon PostgreSQL (REAL)"
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    db = SQLAlchemy(app)
+except Exception as e:
+    print(f"!!! ERROR CRÍTICO DB: {e}")
+    db = None
 
-# --- RUTA DE HEALTH CHECK (Para UptimeRobot/Render) ---
+# --- MODELOS ---
+class User(db.Model):
+    __tablename__ = 'user'
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    hash = db.Column(db.String(255), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    identificador = db.Column(db.String(120), nullable=False)
+    role = db.Column(db.String(20), default="gratis")
+    fingerprint = db.Column(db.String(80), nullable=True)
+    subscription_end = db.Column(db.String(50), nullable=True)
+    files = db.relationship('UserFile', backref='owner', lazy=True)
+
+class UserFile(db.Model):
+    __tablename__ = 'user_file'
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_username = db.Column(db.String(80), db.ForeignKey('user.username'), nullable=False)
+    parent_id = db.Column(db.String(36), nullable=True)
+    name = db.Column(db.String(255), nullable=False)
+    type = db.Column(db.String(20), nullable=False)
+    size_bytes = db.Column(db.BigInteger, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    storage_path = db.Column(db.String(500), nullable=True)
+    is_published = db.Column(db.Boolean, default=False)
+    description = db.Column(db.Text, nullable=True)
+    tags = db.Column(db.String(500), nullable=True)
+    price = db.Column(db.Float, default=0.0)
+
+# Modelos Legacy
+class HistoricalLog(db.Model):
+    __tablename__ = 'historical_log'
+    id = db.Column(db.Integer, primary_key=True)
+    user = db.Column(db.String(80)); ip = db.Column(db.String(50)); quality = db.Column(db.String(50))
+    filename = db.Column(db.String(255)); date = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+
+class IncidentReport(db.Model):
+    __tablename__ = 'incident_report'
+    id = db.Column(db.Integer, primary_key=True)
+    user = db.Column(db.String(80)); ip = db.Column(db.String(50)); message = db.Column(db.Text)
+    filename = db.Column(db.String(255)); date = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+
+class UpdateFile(db.Model):
+    __tablename__ = 'update_file'
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String(255), unique=True); version = db.Column(db.String(50))
+    size = db.Column(db.Integer); date = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+
+with app.app_context():
+    if db: db.create_all()
+
+# --- RUTAS ---
 @app.route('/')
-def health_check():
-    """
-    Ruta principal que devuelve un 200 OK para los monitores de uptime.
-    """
-    print("[HEALTH CHECK] UptimeRobot/Render ha revisado el servidor.")
-    return jsonify({"status": "Servidor de control en marcha (v2.5)"}), 200
+def health_check(): return jsonify({"status": "v10.0 ONLINE", "db": db_status}), 200
 
+# --- 1. RUTA ADMIN (LA QUE FALTABA) ---
+@app.route('/api/admin/users', methods=['GET'])
+def admin_list():
+    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "No"}), 403
+    try:
+        users = User.query.all()
+        return jsonify([{
+            "username": u.username, "email": u.email, "role": u.role, 
+            "subscriptionEndDate": u.subscription_end
+        } for u in users]), 200
+    except Exception as e: return jsonify({"error": str(e)}), 500
 
-# ----------------------------------------------------
-# 🔐 REGISTRO Y LOGIN (rutas /api/register y /api/login)
-# ----------------------------------------------------
-@app.route('/api/register', methods=['POST'])
-def register_user():
-    data = request.get_json()
-    username = data.get('username')
-    email = data.get('email')
-    password = data.get('password')
-    identificador = data.get('identificador')
+@app.route('/api/admin/users/<username>', methods=['DELETE'])
+def admin_delete(username):
+    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "No"}), 403
+    try:
+        u = User.query.filter_by(username=username).first()
+        if u: db.session.delete(u); db.session.commit()
+        return jsonify({"message": "Eliminado"}), 200
+    except Exception as e: return jsonify({"error": str(e)}), 500
 
-    # Validación de campos
-    if not username or not email or not password or not identificador:
-        return jsonify({"message": "Faltan campos requeridos."}), 400
+@app.route('/api/admin/users/<username>', methods=['PUT'])
+def admin_update(username):
+    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "No"}), 403
+    try:
+        u = User.query.filter_by(username=username).first()
+        d = request.get_json()
+        if u:
+            if 'role' in d: u.role = d['role']
+            if 'subscriptionEndDate' in d: u.subscription_end = d['subscriptionEndDate']
+            db.session.commit()
+            return jsonify({"message": "Actualizado"}), 200
+        return jsonify({"msg": "404"}), 404
+    except Exception as e: return jsonify({"error": str(e)}), 500
 
-    # 1. Verificar si el usuario ya existe
-    if username in db_users:
-        return jsonify({"message": "El nombre de usuario ya existe."}), 409
-
-    # 2. Hashing de la contraseña por seguridad
-    hashed_password = generate_password_hash(password)
-
-    # 3. Almacenar el usuario
-    db_users[username] = {
-        "hash": hashed_password,
-        "email": email,
-        "identificador": identificador,
-        "fingerprint": username.lower() # Este es el ID de autoría usado para el CRS
-    }
-    
-    # 4. Inicializar la lista de archivos para el nuevo usuario
-    db_files[username] = []
-
-    print(f"[REGISTRO] Usuario {username} registrado. ID Fingerprint: {db_users[username]['fingerprint']}")
-    return jsonify({"message": "Usuario registrado exitosamente."}), 201
-
-@app.route('/api/login', methods=['POST'])
-def login_user():
-    data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
-
-    # 1. Validar campos
-    if not username or not password:
-        return jsonify({"message": "Faltan campos requeridos."}), 400
-
-    # 2. Buscar usuario
-    user_data = db_users.get(username)
-
-    if user_data and check_password_hash(user_data['hash'], password):
-        # 3. Éxito: Devolver datos no sensibles para el localStorage del frontend
-        print(f"[LOGIN] Usuario {username} ha iniciado sesión.")
+# --- 2. SUBIDA DE ARCHIVOS ---
+@app.route('/api/upload-file', methods=['POST'])
+def upload_user_file():
+    try:
+        if 'file' not in request.files: return jsonify({"message": "Sin archivo"}), 400
+        file = request.files['file']
+        user_id = request.form.get('userId'); parent_id = request.form.get('parentId')
         
-        # Simulamos un log de actividad (Consola 1)
-        db_logs_historicos.insert(0, {
-            "id": str(uuid.uuid4()),
-            "date": datetime.datetime.now().isoformat(),
-            "type": "LOGIN",
-            "user": username,
-            "description": "Inicio de sesión exitoso en la plataforma.",
-            "ip": request.remote_addr,
-            "url_log": f"/simulated_logs/log_{username}_{int(time.time())}.txt"
-        })
+        user = User.query.filter_by(username=user_id).first()
+        if not user: return jsonify({"message": "Usuario inválido"}), 403
+
+        filename = secure_filename(file.filename)
+        unique_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+        save_path = os.path.join(UPLOAD_FOLDER, unique_name)
+        file.save(save_path)
         
+        file_size = os.path.getsize(save_path)
+        if parent_id == 'null' or parent_id == 'undefined': parent_id = None
+        
+        new_file = UserFile(owner_username=user_id, name=filename, type='file', parent_id=parent_id, size_bytes=file_size, storage_path=unique_name)
+        db.session.add(new_file); db.session.commit()
+
         return jsonify({
-            "message": "Login exitoso",
-            "user": {
-                "username": username,
-                "email": user_data['email'],
-                "identificador": user_data['identificador'],
-                "isAdmin": username.lower() == 'admin' # Rol simulado de admin
-            }
-        }), 200
-    else:
-        # 4. Fallo
-        print(f"[LOGIN] Fallo de login para {username}.")
-        return jsonify({"message": "Credenciales incorrectas."}), 401
-
-
-# ----------------------------------------------------
-# ⬆️ GESTIÓN DE ARCHIVOS CRS (rutas /get-crs-author y /upload-crs)
-# ----------------------------------------------------
-def simular_analisis_crs(file_storage, logged_fingerprint):
-    """
-    Simula el análisis forense del archivo CRS (.crs) para extraer la autoría.
-    
-    Lógica de simulación:
-    - Si el nombre del archivo empieza por 'CLEAN', devuelve el fingerprint del usuario.
-    - Si el nombre del archivo empieza por 'WARNING', devuelve un fingerprint diferente.
-    - Si el nombre del archivo empieza por 'MALWARE', devuelve "NO_ID".
-    - Cualquier otro archivo devuelve un ID aleatorio.
-    """
-    filename = file_storage.filename.upper()
-    
-    if filename.startswith('CLEAN_'):
-        extracted_id = logged_fingerprint
-        block_text = f"Autoría verificada. ID: {extracted_id}"
-    elif filename.startswith('WARNING_'):
-        # Simula un ID diferente al del usuario logueado
-        extracted_id = f"ANON_{int(time.time())}"
-        block_text = f"⚠️ Advertencia de Autoría. El ID extraído ({extracted_id}) NO COINCIDE con su perfil ({logged_fingerprint}). Requiere supervisión."
-    elif filename.startswith('MALWARE_'):
-        extracted_id = "NO_ID"
-        block_text = "🚫 Bloque de Autoría Ilegible. El archivo NO CONTIENE el ID de autenticación. Se clasifica como CRÍTICO."
-    else:
-        # Por defecto, devuelve el ID del usuario
-        extracted_id = logged_fingerprint
-        block_text = f"Análisis estándar completado. ID: {extracted_id}"
-
-    return {
-        "autor_encriptada": "0x"+str(uuid.uuid4()).replace('-', '')[0:16], # Hash simulado
-        "raw_extracted_id": extracted_id, # ID sin ofuscar (el importante)
-        "autor_propietaria": logged_fingerprint, # El ID del usuario que sube
-        "forensic_block_text": block_text
-    }
+            "message": "Subido", 
+            "newFile": {"id": new_file.id, "name": new_file.name, "type": "file", "parentId": new_file.parent_id, "size": f"{file_size/1048576:.2f} MB"}
+        }), 201
+    except Exception as e: return jsonify({"message": str(e)}), 500
 
 @app.route('/get-crs-author', methods=['POST'])
-def get_crs_author():
-    """
-    Paso 1: Recibe el archivo, simula el análisis y devuelve el ID de autoría.
-    """
-    logged_user = request.form.get('logged_user')
-    file = request.files.get('file')
+def inspect_crs_author():
+    try:
+        if 'file' not in request.files: return jsonify({"error": "No file"}), 400
+        file = request.files['file']
+        temp_path = os.path.join(UPLOAD_FOLDER, f"temp_{uuid.uuid4().hex}.crs")
+        file.save(temp_path)
+        author_id = "N/A"
+        try:
+            with open(temp_path, 'rb') as f:
+                data = pickle.load(f)
+            author_id = data.get('public_author', 'N/A')
+        except: pass
+        finally:
+            if os.path.exists(temp_path): os.remove(temp_path)
+        return jsonify({"authorId": str(author_id)}), 200
+    except Exception as e: return jsonify({"error": str(e)}), 500
 
-    if not logged_user or not file:
-        return jsonify({"message": "Faltan el usuario logueado o el archivo."}), 400
-    
-    # 1. Obtener el 'fingerprint' del usuario logueado
-    user_data = db_users.get(logged_user)
-    if not user_data:
-        return jsonify({"message": "Usuario no encontrado."}), 404
-        
-    logged_fingerprint = user_data['fingerprint']
+# --- 3. LISTADO ---
+@app.route('/api/my-files/<username>', methods=['GET'])
+def get_files(username):
+    try:
+        files = UserFile.query.filter_by(owner_username=username).all()
+        return jsonify([
+            {"id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id, "size": f"{f.size_bytes/1048576:.2f} MB" if f.size_bytes else "0 KB", "path": f.storage_path, "isPublished": f.is_published} 
+            for f in files
+        ]), 200
+    except Exception: return jsonify([]), 200
 
-    # 2. Simular el análisis forense
-    forensic_result = simular_analisis_crs(file, logged_fingerprint)
-    
-    print(f"[ANALISIS] Archivo {file.filename}. Resultado ID: {forensic_result['raw_extracted_id']}")
-    
-    return jsonify(forensic_result), 200
+@app.route('/api/create-folder', methods=['POST'])
+def create_folder():
+    try:
+        d = request.get_json()
+        nf = UserFile(owner_username=d.get('userId'), name=d.get('name'), type='folder', parent_id=d.get('parentId'), size_bytes=0)
+        db.session.add(nf); db.session.commit()
+        return jsonify({"newFolder": {"id": nf.id, "name": nf.name, "type": "folder", "parentId": nf.parent_id}}), 201
+    except Exception as e: return jsonify({"message": str(e)}), 500
 
-@app.route('/upload-crs', methods=['POST'])
-def upload_crs():
-    """
-    Paso 2: Recibe el archivo y los metadatos, registra la subida final.
-    """
-    logged_user = request.form.get('logged_user')
-    extracted_id = request.form.get('extracted_id') # El ID extraído en el paso 1
-    file = request.files.get('file')
+@app.route('/api/delete-file', methods=['DELETE'])
+def delete_f():
+    try:
+        d = request.get_json(); f = UserFile.query.get(d.get('fileId'))
+        if f: db.session.delete(f); db.session.commit()
+        return jsonify({"message": "Deleted"}), 200
+    except: return jsonify({"message": "Error"}), 500
 
-    if not logged_user or not extracted_id or not file:
-        return jsonify({"message": "Faltan datos esenciales para la subida."}), 400
+@app.route('/api/update-file', methods=['POST'])
+def upd_file():
+    try:
+        d = request.get_json(); f = UserFile.query.get(d.get('fileId'))
+        if f:
+            u = d.get('updates', {})
+            if 'name' in u: f.name = u['name']
+            if 'isPublished' in u: f.is_published = u['isPublished']
+            db.session.commit()
+            return jsonify({"updatedFile": {"id": f.id, "isPublished": f.is_published}}), 200
+        return jsonify({"msg": "404"}), 404
+    except: return jsonify({"message": "Error"}), 500
 
-    user_data = db_users.get(logged_user)
-    if not user_data:
-        return jsonify({"message": "Usuario no encontrado."}), 404
-        
-    logged_fingerprint = user_data['fingerprint']
-    
-    final_status = ""
-    warning_message = None
-    allowed = True
+# --- 4. AUTH ---
+@app.route('/api/login', methods=['POST'])
+def login():
+    d = request.get_json(); u = User.query.filter_by(username=d.get('username')).first()
+    if u and bcrypt.check_password_hash(u.hash, d.get('password')): 
+        return jsonify({"message": "OK", "user": {"username": u.username, "email": u.email, "role": u.role, "identificador": u.identificador, "isAdmin": u.role == 'admin'}}), 200
+    return jsonify({"message": "Bad credentials"}), 401
 
-    # 1. Control de Archivos Ilegibles (MALWARE_*)
-    if extracted_id == "NO_ID":
-        final_status = "malware"
-        warning_message = "CRÍTICO: Bloque de Autoría Ilegible. Subida RECHAZADA."
-        allowed = False
-        print(f"[SUBIDA] Archivo {file.filename} RECHAZADO (Malware/NO_ID).")
+@app.route('/api/register', methods=['POST'])
+def register():
+    d = request.get_json()
+    if User.query.filter_by(username=d.get('username')).first(): return jsonify({"message": "Taken"}), 409
+    db.session.add(User(username=d.get('username'), hash=bcrypt.generate_password_hash(d.get('password')).decode('utf-8'), email=d.get('email'), identificador=d.get('identificador'), role="gratis", fingerprint=d.get('username').lower()))
+    db.session.commit(); return jsonify({"message": "OK"}), 201
 
-    # 2. Control de Archivos Limpios (CLEAN_*)
-    elif extracted_id == logged_fingerprint:
-        final_status = "clean"
-        warning_message = "Verificado: Autoría validada. Subida ACEPTADA."
-        print(f"[SUBIDA] Archivo {file.filename} ACEPTADO (Clean).")
-
-    # 3. Control de Archivos con Advertencia (WARNING_*)
-    else: # Si extracted_id NO COINCIDE con logged_fingerprint
-        final_status = "warning"
-        warning_message = f"ADVERTENCIA: Autoría ({extracted_id}) NO COINCIDE con perfil ({logged_fingerprint}). Subida ACEPTADA bajo supervisión."
-        allowed = True
-        print(f"[SUBIDA] Archivo {file.filename} ACEPTADO (Warning).")
-
-    
-    # 4. Si el archivo está permitido, registrar metadatos
-    if allowed:
-        new_file_metadata = {
-            "id": str(uuid.uuid4()),
-            "filename": file.filename,
-            "size": len(file.read()), # Leemos el tamaño del archivo
-            "date": datetime.datetime.now().isoformat(),
-            "status": final_status,
-            "extracted_id": extracted_id
-        }
-        file.seek(0) # Resetear el puntero del archivo
-        
-        db_files[logged_user].insert(0, new_file_metadata) # Almacenar en la "DB"
-
-        # Simulamos un log de actividad (Consola 1)
-        db_logs_historicos.insert(0, {
-            "id": str(uuid.uuid4()),
-            "date": datetime.datetime.now().isoformat(),
-            "type": "FILE_UPLOAD",
-            "user": logged_user,
-            "description": f"Subido archivo {file.filename} con estado: {final_status}.",
-            "ip": request.remote_addr,
-            "url_log": f"/simulated_logs/log_{logged_user}_{int(time.time())}.txt"
-        })
-    
-    return jsonify({
-        "message": warning_message,
-        "status": final_status,
-        "allowed": allowed
-    }), 200
-
-# ----------------------------------------------------
-# 🖥️ CONSOLAS DE ADMINISTRACIÓN
-# ----------------------------------------------------
-
-# --- RUTA DE CONSOLA 1: LOG HISTÓRICO ---
-@app.route('/api/logs/historical', methods=['GET'])
-def list_historical_logs():
-    """
-    Entrega la lista de logs de actividad a 'documentos.jsx' (Consola 1).
-    """
-    global db_logs_historicos
-    # Devolvemos una copia de la lista (simulando una consulta a la DB)
-    print(f"[CONSOLA 1] Admin listando logs históricos. Total: {len(db_logs_historicos)}")
-    return jsonify(db_logs_historicos), 200
-
-# --- RUTA DE CONSOLA 3: GESTIÓN DE ACTUALIZACIONES ---
-@app.route('/api/updates/upload', methods=['POST'])
-def upload_update_file():
-    """
-    Recibe el archivo de actualización .py del admin (documentos.jsx).
-    """
-    # El frontend de Vercel (documentos.jsx) envía el nombre en un header
-    filename = request.headers.get('X-Vercel-Filename')
-    
-    # Asumimos que el admin está logueado (aquí no hay verificación de Auth real)
-    if not filename:
-        return jsonify({"message": "Falta el nombre del archivo (X-Vercel-Filename)."}), 400
-
-    # Registrar la metadata de la actualización
-    new_update_metadata = {
-        "id": str(uuid.uuid4()),
-        "filename": filename,
-        "date": datetime.datetime.now().isoformat(),
-        "version": filename.replace('.py', '').split('_')[-1] # Versión simulada
-    }
-
-    global db_archivos_actualizacion
-    # Insertar al inicio para que el último subido sea el "más reciente"
-    db_archivos_actualizacion.insert(0, new_update_metadata) 
-    
-    print(f"[CONSOLA 3] Archivo de actualización subido: {filename}")
-
-    return jsonify({"message": "Actualización registrada con éxito."}), 201
-
-@app.route('/api/updates/list', methods=['GET'])
-def list_updates():
-    """
-    Entrega la lista de archivos de actualización subidos a 'documentos.jsx' (Consola 3).
-    """
-    global db_archivos_actualizacion
-    print(f"[CONSOLA 3] Admin listando archivos de actualización. Total: {len(db_archivos_actualizacion)}")
-    return jsonify(db_archivos_actualizacion), 200
-
-@app.route('/api/updates/check', methods=['GET'])
-def check_for_update():
-    """
-    Endpoint para que el script 'actualizacion.py' compruebe si hay una versión nueva.
-    Utiliza Autenticación Básica (Basic Auth).
-    """
-    # 1. Autenticación Básica para el script de actualización
-    auth = request.authorization
-    # El script 'actualizacion.py' utiliza el par ('socios', '121351')
-    if not auth or auth.username != 'socios' or auth.password != '121351':
-        print("[AUTH FALLIDA] Intento de acceso a /api/updates/check.")
-        return jsonify({'message': 'Acceso denegado. Autenticación fallida.'}), 401
-    
-    global db_archivos_actualizacion
-    
-    # 2. Devolver la actualización más reciente
-    if db_archivos_actualizacion:
-        latest_update = db_archivos_actualizacion[0] # El primero es el más reciente
-        print(f"[UPDATE CHECK] Script conectado. Última versión disponible: {latest_update['filename']}")
-        return jsonify({
-            "status": "available",
-            "filename": latest_update['filename'],
-            "url": f"/simulated_downloads/{latest_update['filename']}", # Ruta de descarga simulada
-            "version": latest_update['version']
-        }), 200
-    else:
-        print("[UPDATE CHECK] Script conectado. No hay actualizaciones disponibles.")
-        return jsonify({"status": "latest", "message": "No hay actualizaciones disponibles."}), 200
-
-# ----------------------------------------------------
-# 🚨 RUTA DE CONSOLA 2: REPORTES DE INCIDENTE (¡NUEVO!)
-# ----------------------------------------------------
-
+# --- 5. CONSOLAS ---
+@app.route('/api/logs/historical', methods=['POST', 'GET'])
+def logs(): 
+    if request.method=='POST': return jsonify({"status":"OK"}), 201
+    return jsonify([]), 200
 @app.route('/api/logs/incident', methods=['POST'])
-def receive_incident_report():
-    """
-    Recibe el reporte de incidente desde 'actualizacion.py' (Modo incidente).
-    """
-    # Headers de contexto enviados por el script
-    username = request.headers.get('X-Username', 'desconocido')
-    ip = request.headers.get('X-IP', '0.0.0.0')
-    quality = request.headers.get('X-Quality', 'N/A')
-    
-    # Datos enviados por el script actualizacion.py (run_incident_report)
-    message = request.form.get('message')
-    log_file_storage = request.files.get('log_file')
-    
-    # Validación básica
-    if not message or not log_file_storage:
-        print("[INCIDENTE] Error 400: Faltan datos en el reporte.")
-        return jsonify({"message": "Faltan datos de mensaje o archivo de log (log_file)"}), 400
-
-    # Crear entrada de incidente
-    incident_entry = {
-        "id": str(uuid.uuid4()),
-        "user": username,
-        "ip": ip,
-        "quality": quality,
-        "logFileName": log_file_storage.filename,
-        # Nota: Usamos una URL simulada para la descarga en el panel de admin
-        "logFileUrl": f"/simulated_logs/{log_file_storage.filename.replace('.txt', '_INCIDENTE.txt')}",
-        "message": message,
-        "date": datetime.datetime.now().isoformat(),
-        "is_incident": True
-    }
-    
-    global db_incidentes_reportados
-    db_incidentes_reportados.insert(0, incident_entry) 
-    
-    print(f"[CONSOLA 2] Incidente recibido de {username} ({ip}). Archivo: {log_file_storage.filename}")
-    return jsonify({"message": "Reporte de incidente recibido"}), 201
-
+def inc(): return jsonify({"status":"OK"}), 201
 @app.route('/api/logs/incidents', methods=['GET'])
-def list_incident_reports():
-    """
-    Entrega la lista de incidentes a 'documentos.jsx' (Consola 2).
-    """
-    global db_incidentes_reportados
-    
-    print(f"[CONSOLA 2] Admin listando incidentes. Total: {len(db_incidentes_reportados)}")
-    # Devuelve la lista de incidentes (ordenados por el más reciente)
-    return jsonify(db_incidentes_reportados), 200
+def incs(): return jsonify([]), 200
+@app.route('/api/updates/check', methods=['GET'])
+def chk(): return jsonify({"message":"No updates"}), 404
 
-
-# ----------------------------------------------------
-# ⬇️ RUTAS DE DESCARGA SIMULADA
-# ----------------------------------------------------
-@app.route('/simulated_downloads/<filename>')
-def download_simulated_update(filename):
-    """
-    Simula la descarga del archivo .py de actualización. Requiere Basic Auth.
-    """
-    auth = request.authorization
-    # Verifica la misma Basic Auth que usa el script 'actualizacion.py'
-    if not auth or auth.username != 'socios' or auth.password != '121351':
-        abort(401)
-        
-    print(f"[DESCARGA] Cliente descargando actualización: {filename}")
-    
-    # Contenido simulado para el archivo .py
-    fake_content = f"""
-# --- Archivo de actualización simulado: {filename} ---
-import time
-print("Iniciando actualización simulada...")
-time.sleep(3)
-print("...Proceso de actualización simulado terminado.")
-# --- Fin de la simulación ---
-"""
-    response = make_response(fake_content)
-    response.headers["Content-Type"] = "text/x-python-script"
-    response.headers["Content-Disposition"] = f"attachment; filename={filename}"
-    return response
-
-@app.route('/simulated_logs/<filename>')
-def download_simulated_log(filename):
-    """
-    Simula la descarga de un log o reporte para el admin (Consola 1 y 2).
-    """
-    print(f"[DESCARGA] Admin descargando log/reporte: {filename}")
-    
-    # Contenido simulado
-    if 'INCIDENTE' in filename:
-         fake_content = f"--- REPORTE DE INCIDENTE SIMULADO ---\nFecha: {datetime.datetime.now().isoformat()}\nUsuario Reporte: {filename.split('_')[1]}\n\n[Contenido Anti-Robo] Detección de código malicioso en la línea 42 de main.c. Archivo bloqueado y puesto en cuarentena."
-    else:
-        fake_content = f"Contenido simulado del log de actividad: {filename}\nUsuario: {filename.split('_')[1] or 'N/A'}\nDetalle: Simulación de 500 líneas de actividad normal del sistema."
-        
-    response = make_response(fake_content)
-    response.headers["Content-Type"] = "text/plain"
-    return response
-
-
-# --- Iniciar el servidor ---
-if __name__ == '__main__':
-    # Usar puerto 5000 por defecto para desarrollo local
-    # Render automáticamente usará la variable de entorno PORT.
-    print("\n--- Servidor de Control de Servicios (Nano Blue) ---")
-    print("🌐 Iniciando servidor Flask. Acceso: http://127.0.0.1:5000")
-    # Para Render, usamos host='0.0.0.0' para que sea accesible externamente
-    app.run(host='0.0.0.0', port=os.environ.get('PORT', 5000), debug=True)
+if __name__ == '__main__': 
+    app.run(host='0.0.0.0', port=7860)
