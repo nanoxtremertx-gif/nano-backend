@@ -1,4 +1,4 @@
-# --- servidor.py --- (v10.3 - Full Systems + Log Fix + RUT Validation)
+# --- servidor.py --- (v10.4 - Full Systems + Log Fix + RUT Validation + Size Bytes Fix)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
@@ -17,7 +17,7 @@ except ImportError:
     print("!!! WARN: Numpy no detectado.")
 
 app = Flask(__name__)
-print(">>> INICIANDO SERVIDOR MAESTRO (v10.3 - Log Fix) <<<")
+print(">>> INICIANDO SERVIDOR MAESTRO (v10.4 - Size Fix) <<<")
 
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 bcrypt = Bcrypt(app)
@@ -107,7 +107,7 @@ def get_file_url(filename):
 
 # --- RUTAS ---
 @app.route('/')
-def health_check(): return jsonify({"status": "v10.3 ONLINE (Log Fix)", "db": db_status}), 200
+def health_check(): return jsonify({"status": "v10.4 ONLINE (Size Fix)", "db": db_status}), 200
 
 @app.route('/uploads/<path:filename>')
 def download_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
@@ -188,13 +188,22 @@ def admin_delete(username):
     if u: db.session.delete(u); db.session.commit()
     return jsonify({"message": "Eliminado"}), 200
 
-# --- 3. ARCHIVOS ---
+# --- 3. ARCHIVOS (CORREGIDO PARA ENVIAR BYTES) ---
 @app.route('/api/my-files/<username>', methods=['GET'])
 def get_files(username):
     try:
         files = UserFile.query.filter_by(owner_username=username).all()
         return jsonify([
-            {"id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id, "size": f"{f.size_bytes/1048576:.2f} MB", "path": f.storage_path, "isPublished": f.is_published} 
+            {
+                "id": f.id, 
+                "name": f.name, 
+                "type": f.type, 
+                "parentId": f.parent_id, 
+                "size": f"{f.size_bytes/1048576:.2f} MB", 
+                "size_bytes": f.size_bytes,  # <--- NUEVO CAMPO IMPORTANTE
+                "path": f.storage_path, 
+                "isPublished": f.is_published
+            } 
             for f in files
         ]), 200
     except: return jsonify([]), 200
@@ -218,7 +227,20 @@ def upload_user_file():
         
         new_file = UserFile(owner_username=user_id, name=filename, type='file', parent_id=parent_id, size_bytes=file_size, storage_path=unique_name)
         db.session.add(new_file); db.session.commit()
-        return jsonify({"message": "Subido", "newFile": {"id": new_file.id, "name": new_file.name}}), 201
+        
+        # RESPUESTA MEJORADA PARA ACTUALIZAR FRONTEND AL INSTANTE
+        return jsonify({
+            "message": "Subido", 
+            "newFile": {
+                "id": new_file.id, 
+                "name": new_file.name,
+                "type": "file",
+                "parentId": parent_id,
+                "size": f"{file_size/1048576:.2f} MB",
+                "size_bytes": file_size, # <--- NECESARIO PARA EL CONTADOR
+                "isPublished": False
+            }
+        }), 201
     except Exception as e: return jsonify({"message": str(e)}), 500
 
 @app.route('/api/create-folder', methods=['POST'])
