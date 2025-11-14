@@ -1,4 +1,4 @@
-# --- servidor.py --- (v10.8 - DB Compatibility Fix + Update System)
+# --- servidor.py --- (v11.0 - THE REPAIRMAN)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
@@ -10,15 +10,10 @@ import uuid
 import os
 import pickle
 from urllib.parse import urlparse, urlunparse
-
-# Soporte Numpy
-try:
-    import numpy
-except ImportError:
-    print("!!! WARN: Numpy no detectado.")
+from sqlalchemy import text # Para reparaciones SQL
 
 app = Flask(__name__)
-print(">>> INICIANDO SERVIDOR MAESTRO (v10.8 - DB Fix) <<<")
+print(">>> INICIANDO SERVIDOR MAESTRO (v11.0 - REPAIR EDITION) <<<")
 
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 bcrypt = Bcrypt(app)
@@ -26,13 +21,13 @@ ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025"
 
 # --- 🧠 MEMORIA RAM (Usuarios Online) ---
 ONLINE_USERS = {} 
-# ----------------------------------------
 
 # --- 📂 DIRECTORIOS ---
-UPLOAD_FOLDER = os.path.join(os.getcwd(), 'uploads')
-LOGS_FOLDER = os.path.join(os.getcwd(), 'logs_historical')
-UPDATES_FOLDER = os.path.join(os.getcwd(), 'updates')
-INCIDENTS_FOLDER = os.path.join(os.getcwd(), 'logs_incidents')
+BASE_DIR = os.getcwd()
+UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
+LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')
+UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates')
+INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')
 
 for folder in [UPLOAD_FOLDER, LOGS_FOLDER, UPDATES_FOLDER, INCIDENTS_FOLDER]:
     os.makedirs(folder, exist_ok=True)
@@ -58,7 +53,7 @@ except Exception as e:
     print(f"!!! ERROR CRÍTICO DB: {e}")
     db = None
 
-# --- MODELOS (Restaurados para compatibilidad) ---
+# --- MODELOS ---
 
 class User(db.Model):
     __tablename__ = 'user'
@@ -87,22 +82,22 @@ class UserFile(db.Model):
     tags = db.Column(db.String(500), nullable=True)
     price = db.Column(db.Float, default=0.0)
 
-# --- CORRECCIÓN: Usamos 'filename' como referencia para evitar errores de columna faltante ---
 class HistoricalLog(db.Model):
     __tablename__ = 'historical_log'
     id = db.Column(db.Integer, primary_key=True)
     user = db.Column(db.String(80)); ip = db.Column(db.String(50)); quality = db.Column(db.String(50))
-    filename = db.Column(db.String(255)) # Usaremos esto como ID del archivo
+    filename = db.Column(db.String(255)) 
+    storage_path = db.Column(db.String(500)) # Nueva columna
     date = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
 class IncidentReport(db.Model):
     __tablename__ = 'incident_report'
     id = db.Column(db.Integer, primary_key=True)
     user = db.Column(db.String(80)); ip = db.Column(db.String(50)); message = db.Column(db.Text)
-    filename = db.Column(db.String(255)) # Usaremos esto como ID del archivo
+    filename = db.Column(db.String(255)) 
+    storage_path = db.Column(db.String(500)) # Nueva columna
     date = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
-# --- NUEVA TABLA (Se creará automáticamente porque no existe) ---
 class UpdateFile(db.Model):
     __tablename__ = 'update_file'
     id = db.Column(db.Integer, primary_key=True)
@@ -120,9 +115,36 @@ def get_file_url(filename, folder_route='uploads'):
     if not filename: return None
     return f"{request.host_url}{folder_route}/{filename}"
 
+# --- 🚑 ZONA DE REPARACIÓN (SOLO ADMIN) 🚑 ---
+@app.route('/api/fix-db', methods=['GET'])
+def fix_database_tables():
+    """
+    Borra y recrea las tablas de consolas para asegurar que tengan las columnas nuevas.
+    NO TOCA LA TABLA DE USUARIOS NI ARCHIVOS.
+    """
+    key = request.args.get('key')
+    if key != ADMIN_SECRET_KEY:
+        return jsonify({"msg": "Acceso Denegado"}), 403
+    
+    try:
+        # Borrar tablas problemáticas (si existen)
+        try: UpdateFile.__table__.drop(db.engine)
+        except: pass
+        try: IncidentReport.__table__.drop(db.engine)
+        except: pass
+        try: HistoricalLog.__table__.drop(db.engine)
+        except: pass
+        
+        # Recrear todas (las que faltan)
+        db.create_all()
+        
+        return jsonify({"status": "SUCCESS", "msg": "Tablas de consolas reparadas y actualizadas."}), 200
+    except Exception as e:
+        return jsonify({"status": "ERROR", "msg": str(e)}), 500
+
 # --- RUTAS DE DESCARGA ---
 @app.route('/')
-def health_check(): return jsonify({"status": "v10.8 ONLINE", "db": db_status}), 200
+def health_check(): return jsonify({"status": "v11.0 ONLINE", "db": db_status}), 200
 
 @app.route('/uploads/<path:filename>')
 def download_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
@@ -136,19 +158,18 @@ def download_incident_file(filename): return send_from_directory(INCIDENTS_FOLDE
 @app.route('/updates/<path:filename>')
 def download_update_file(filename): return send_from_directory(UPDATES_FOLDER, filename)
 
-# --- AUTH & HEARTBEAT (Lógica Online) ---
+# --- AUTH ---
 @app.route('/api/register', methods=['POST'])
 def register():
     d = request.get_json()
     if User.query.filter_by(username=d.get('username')).first(): return jsonify({"message": "Usuario ocupado"}), 409
     if User.query.filter_by(email=d.get('email')).first(): return jsonify({"message": "Email ocupado"}), 409
-    if User.query.filter_by(identificador=d.get('identificador')).first(): return jsonify({"message": "ID ocupado"}), 409
     new_user = User(username=d.get('username'), hash=bcrypt.generate_password_hash(d.get('password')).decode('utf-8'), email=d.get('email'), identificador=d.get('identificador'), role="gratis", fingerprint=d.get('username').lower())
     try:
         db.session.add(new_user)
         db.session.add(UserFile(owner_username=d.get('username'), name="Archivos de Usuario", type='folder', parent_id=None, size_bytes=0))
         db.session.commit()
-        ONLINE_USERS[d.get('username')] = datetime.datetime.utcnow() # 🟢 Online
+        ONLINE_USERS[d.get('username')] = datetime.datetime.utcnow()
         return jsonify({"message": "Registrado"}), 201
     except Exception as e: db.session.rollback(); return jsonify({"message": str(e)}), 500
 
@@ -157,7 +178,7 @@ def login():
     d = request.get_json()
     u = User.query.filter_by(username=d.get('username')).first()
     if u and bcrypt.check_password_hash(u.hash, d.get('password')):
-        ONLINE_USERS[u.username] = datetime.datetime.utcnow() # 🟢 Online
+        ONLINE_USERS[u.username] = datetime.datetime.utcnow()
         return jsonify({"message": "OK", "user": {"username": u.username, "email": u.email, "role": u.role, "identificador": u.identificador, "isAdmin": u.role == 'admin'}}), 200
     return jsonify({"message": "Credenciales inválidas"}), 401
 
@@ -176,7 +197,7 @@ def logout_signal():
         else: username = request.form.get('username')
     except: pass
     if username and username in ONLINE_USERS:
-        del ONLINE_USERS[username] # 🔴 Offline
+        del ONLINE_USERS[username]
         return jsonify({"status": "disconnected"}), 200
     return jsonify({"status": "ignored"}), 200
 
@@ -190,7 +211,7 @@ def get_online_users():
     for u in users_to_remove: del ONLINE_USERS[u]
     return jsonify({"count": len(active_list), "users": active_list}), 200
 
-# --- ADMIN & FILES ---
+# --- ADMIN FILES ---
 @app.route('/api/admin/users', methods=['GET'])
 def admin_list():
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
@@ -279,11 +300,9 @@ def inspect_crs_author():
         return jsonify({"authorId": str(author_id)}), 200
     except: return jsonify({"error": "Error"}), 500
 
-# =========================================================
 # --- CONSOLAS (ARREGLADAS) ---
-# =========================================================
 
-# --- LOGS HISTÓRICOS (Sin storage_path en DB, usa filename) ---
+# LOGS HISTÓRICOS
 @app.route('/api/logs/historical', methods=['POST', 'GET'])
 def logs(): 
     if request.method == 'GET':
@@ -292,8 +311,7 @@ def logs():
             logs = HistoricalLog.query.order_by(HistoricalLog.date.desc()).limit(100).all()
             return jsonify([{
                 "id": log.id, "user": log.user, "ip": log.ip, "quality": log.quality,
-                # Reconstruimos la URL usando el filename
-                "url": get_file_url(log.filename, 'logs_historical') if log.filename else None, 
+                "url": get_file_url(log.storage_path or log.filename, 'logs_historical'), 
                 "date": log.date.isoformat()
             } for log in logs]), 200
         except Exception as e: return jsonify({"error": str(e)}), 500
@@ -301,18 +319,16 @@ def logs():
     if request.method == 'POST':
         user = request.headers.get('X-Username'); ip = request.headers.get('X-IP'); quality = request.headers.get('X-Quality')
         if not user or not ip or not quality: return jsonify({"message": "Faltan datos"}), 400
-        
         filename_ref = f"{user}_{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')}.log"
         save_path = os.path.join(LOGS_FOLDER, filename_ref)
         try:
             with open(save_path, 'wb') as f: f.write(request.data)    
-            # Solo guardamos filename en DB (Compatible con DB antigua)
-            new_log = HistoricalLog(user=user, ip=ip, quality=quality, filename=filename_ref, date=datetime.datetime.utcnow())
+            new_log = HistoricalLog(user=user, ip=ip, quality=quality, filename=filename_ref, storage_path=filename_ref, date=datetime.datetime.utcnow())
             db.session.add(new_log); db.session.commit()
             return jsonify({"status": "Log registrado", "filename": filename_ref}), 201
         except Exception as e: return jsonify({"status": f"Error DB: {str(e)}"}), 500
 
-# --- INCIDENTES (Sin storage_path en DB) ---
+# INCIDENTES
 @app.route('/api/logs/incident', methods=['POST'])
 def inc(): 
     try:
@@ -321,16 +337,14 @@ def inc():
         message = request.form.get('message', 'Sin mensaje')
         if not user or not ip: return jsonify({"message": "Faltan datos"}), 400
 
-        file = request.files.get('log_file'); filename = "N/A"
+        file = request.files.get('log_file'); filename = "N/A"; storage_name = None
         if file:
             filename = secure_filename(file.filename)
-            # El archivo físico tiene nombre único, pero en DB guardamos el nombre que sirva de referencia
-            unique_name = f"INCIDENT_{user}_{uuid.uuid4().hex[:8]}_{filename}"
-            save_path = os.path.join(INCIDENTS_FOLDER, unique_name)
+            storage_name = f"INCIDENT_{user}_{uuid.uuid4().hex[:8]}_{filename}"
+            save_path = os.path.join(INCIDENTS_FOLDER, storage_name)
             file.save(save_path)
-            filename = unique_name # Usamos este nombre único para el campo filename
-
-        new_incident = IncidentReport(user=user, ip=ip, message=message, filename=filename, date=datetime.datetime.utcnow())
+            
+        new_incident = IncidentReport(user=user, ip=ip, message=message, filename=filename, storage_path=storage_name, date=datetime.datetime.utcnow())
         db.session.add(new_incident); db.session.commit()
         return jsonify({"status":"Reporte recibido"}), 201
     except Exception as e: return jsonify({"status": f"Error: {str(e)}"}), 500
@@ -342,12 +356,12 @@ def incs():
         reports = IncidentReport.query.order_by(IncidentReport.date.desc()).limit(100).all()
         return jsonify([{
             "id": r.id, "user": r.user, "ip": r.ip, "message": r.message,
-            "url": get_file_url(r.filename, 'logs_incidents') if r.filename and r.filename != "N/A" else None,
+            "url": get_file_url(r.storage_path, 'logs_incidents') if r.storage_path else None,
             "logFile": r.filename, "date": r.date.isoformat()
         } for r in reports]), 200
     except Exception as e: return jsonify({"error": str(e)}), 500
 
-# --- ACTUALIZACIONES (Tabla Nueva - OK) ---
+# ACTUALIZACIONES
 @app.route('/api/updates/upload', methods=['POST'])
 def upload_update_file():
     try:
