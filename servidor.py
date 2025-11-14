@@ -1,218 +1,452 @@
-import Link from "next/link";
-import { useEffect, useState } from "react";
-import { useRouter } from "next/router";
-import {
-  FaBars, FaTimes, FaUser, FaShoppingCart, FaCog, FaFileUpload,
-  FaComments, FaFileAlt, FaFolderOpen, FaInbox,
-  FaShieldAlt, FaThLarge, FaSearch, FaBook, FaDownload, FaFeatherAlt
-} from "react-icons/fa";
-import { motion, AnimatePresence } from "framer-motion";
+# --- servidor.py --- (v11.0 - THE REPAIRMAN)
+from flask import Flask, jsonify, request, send_from_directory
+from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
+from flask_bcrypt import Bcrypt
+from werkzeug.utils import secure_filename
+import datetime
+from datetime import timedelta
+import uuid
+import os
+import pickle
+from urllib.parse import urlparse, urlunparse
+from sqlalchemy import text # Para reparaciones SQL
 
-export default function Navbar() {
-  const [user, setUser] = useState(null);
-  const router = useRouter();
-  const [isVisible, setIsVisible] = useState(true);
-  const [lastScrollY, setLastScrollY] = useState(0);
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [dockOpen, setDockOpen] = useState(false);
-  const [isMounted, setIsMounted] = useState(false); 
+app = Flask(__name__)
+print(">>> INICIANDO SERVIDOR MAESTRO (v11.0 - REPAIR EDITION) <<<")
 
-  useEffect(() => {
-    const onScroll = () => {
-      if (window.scrollY > lastScrollY && window.scrollY > 100) {
-        setIsVisible(false);
-      } else if (window.scrollY < lastScrollY) {
-        setIsVisible(true);
-      }
-      if (window.scrollY <= 100) {
-        setIsVisible(true);
-      }
-      setLastScrollY(window.scrollY);
-    };
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+bcrypt = Bcrypt(app)
+ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
 
-    window.addEventListener("scroll", onScroll, { passive: true });
+# --- 🧠 MEMORIA RAM (Usuarios Online) ---
+ONLINE_USERS = {} 
 
-    const u = localStorage.getItem("user");
-    if (u) {
-      try { setUser(JSON.parse(u)); } catch { localStorage.removeItem("user"); setUser(null); }
-    } else {
-      setUser(null);
-    }
+# --- 📂 DIRECTORIOS ---
+BASE_DIR = os.getcwd()
+UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
+LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')
+UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates')
+INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')
+
+for folder in [UPLOAD_FOLDER, LOGS_FOLDER, UPDATES_FOLDER, INCIDENTS_FOLDER]:
+    os.makedirs(folder, exist_ok=True)
+
+# --- DB SETUP ---
+db_status = "Desconocido"
+try:
+    raw_url = os.environ.get('NEON_URL')
+    if not raw_url:
+        app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
+        db_status = "SQLite (TEMPORAL)"
+    else:
+        parsed = urlparse(raw_url)
+        scheme = 'postgresql' if parsed.scheme == 'postgres' else parsed.scheme
+        clean_url = urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).strip("'").strip()
+        if 'postgresql' in clean_url and 'sslmode' not in clean_url:
+             clean_url += "?sslmode=require"
+        app.config['SQLALCHEMY_DATABASE_URI'] = clean_url
+        db_status = "Neon PostgreSQL (REAL)"
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    db = SQLAlchemy(app)
+except Exception as e:
+    print(f"!!! ERROR CRÍTICO DB: {e}")
+    db = None
+
+# --- MODELOS ---
+
+class User(db.Model):
+    __tablename__ = 'user'
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    hash = db.Column(db.String(255), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    identificador = db.Column(db.String(120), nullable=False)
+    role = db.Column(db.String(20), default="gratis")
+    fingerprint = db.Column(db.String(80), nullable=True)
+    subscription_end = db.Column(db.String(50), nullable=True)
+    files = db.relationship('UserFile', backref='owner', lazy=True)
+
+class UserFile(db.Model):
+    __tablename__ = 'user_file'
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_username = db.Column(db.String(80), db.ForeignKey('user.username'), nullable=False)
+    parent_id = db.Column(db.String(36), nullable=True)
+    name = db.Column(db.String(255), nullable=False)
+    type = db.Column(db.String(20), nullable=False)
+    size_bytes = db.Column(db.BigInteger, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    storage_path = db.Column(db.String(500), nullable=True)
+    is_published = db.Column(db.Boolean, default=False)
+    description = db.Column(db.Text, nullable=True)
+    tags = db.Column(db.String(500), nullable=True)
+    price = db.Column(db.Float, default=0.0)
+
+class HistoricalLog(db.Model):
+    __tablename__ = 'historical_log'
+    id = db.Column(db.Integer, primary_key=True)
+    user = db.Column(db.String(80)); ip = db.Column(db.String(50)); quality = db.Column(db.String(50))
+    filename = db.Column(db.String(255)) 
+    storage_path = db.Column(db.String(500)) # Nueva columna
+    date = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+
+class IncidentReport(db.Model):
+    __tablename__ = 'incident_report'
+    id = db.Column(db.Integer, primary_key=True)
+    user = db.Column(db.String(80)); ip = db.Column(db.String(50)); message = db.Column(db.Text)
+    filename = db.Column(db.String(255)) 
+    storage_path = db.Column(db.String(500)) # Nueva columna
+    date = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+
+class UpdateFile(db.Model):
+    __tablename__ = 'update_file'
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String(255), unique=True)
+    version = db.Column(db.String(50))
+    size = db.Column(db.Integer)
+    date = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    storage_path = db.Column(db.String(500), nullable=True)
+
+with app.app_context():
+    if db: db.create_all()
+
+# --- ÚTILES ---
+def get_file_url(filename, folder_route='uploads'):
+    if not filename: return None
+    return f"{request.host_url}{folder_route}/{filename}"
+
+# --- 🚑 ZONA DE REPARACIÓN (SOLO ADMIN) 🚑 ---
+@app.route('/api/fix-db', methods=['GET'])
+def fix_database_tables():
+    """
+    Borra y recrea las tablas de consolas para asegurar que tengan las columnas nuevas.
+    NO TOCA LA TABLA DE USUARIOS NI ARCHIVOS.
+    """
+    key = request.args.get('key')
+    if key != ADMIN_SECRET_KEY:
+        return jsonify({"msg": "Acceso Denegado"}), 403
     
-    setIsMounted(true);
-    setIsMobileMenuOpen(false); 
+    try:
+        # Borrar tablas problemáticas (si existen)
+        try: UpdateFile.__table__.drop(db.engine)
+        except: pass
+        try: IncidentReport.__table__.drop(db.engine)
+        except: pass
+        try: HistoricalLog.__table__.drop(db.engine)
+        except: pass
+        
+        # Recrear todas (las que faltan)
+        db.create_all()
+        
+        return jsonify({"status": "SUCCESS", "msg": "Tablas de consolas reparadas y actualizadas."}), 200
+    except Exception as e:
+        return jsonify({"status": "ERROR", "msg": str(e)}), 500
 
-    return () => window.removeEventListener("scroll", onScroll);
-  }, [router.asPath]);
+# --- RUTAS DE DESCARGA ---
+@app.route('/')
+def health_check(): return jsonify({"status": "v11.0 ONLINE", "db": db_status}), 200
 
-  const handleLogout = () => {
-    localStorage.removeItem("user");
-    setUser(null);
-    router.push("/");
-  };
+@app.route('/uploads/<path:filename>')
+def download_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
 
-  const goToLogin = () => router.push("/login");
-   
-  const getUserColor = (role) => {
-    if (role === "admin") return "text-purple-400";
-    if (role === "pro") return "text-amber-400";
-    return "text-green-400";
-  };
+@app.route('/logs_historical/<path:filename>')
+def download_log_file(filename): return send_from_directory(LOGS_FOLDER, filename)
 
-  const getDockIcon = () => {
-    if (!user) return <FaUser size={22} className="text-gray-400" />;
-    if (user.role === "admin") return <FaShieldAlt size={22} className="text-purple-400" />;
-    if (user.role === "pro") return <FaThLarge size={22} className="text-amber-400" />;
-    return <FaThLarge size={22} className="text-green-400" />;
-  };
-   
-  if (!isMounted) {
-      return (
-        <nav className="fixed w-full z-50 bg-gray-900/95 border-b border-gray-800 h-14 flex items-center px-6">
-            <span className="text-2xl font-extrabold text-cyan-400">NANO</span>
-        </nav>
-      );
-  }
+@app.route('/logs_incidents/<path:filename>')
+def download_incident_file(filename): return send_from_directory(INCIDENTS_FOLDER, filename)
 
-  return (
-    <>
-      {/* --- NAVBAR SUPERIOR (DELGADO h-14) --- */}
-      <nav
-        className={`fixed top-4 left-1/2 -translate-x-1/2 w-[95%] max-w-7xl bg-black bg-opacity-70 backdrop-blur-md text-white shadow-xl px-4 md:px-6 h-14 flex justify-between items-center z-50 border border-gray-400/40 rounded-full transition-all duration-500 overflow-visible ${
-          isVisible ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-[150%]"
-        }`}
-      >
-          {/* Menú Izq */}
-          <div className="hidden md:flex gap-6 text-sm font-medium items-center w-1/3"> 
-            <Link href="/descargas" className="hover:text-cyan-400 transition flex items-center gap-1"><FaDownload /> Descargas</Link> 
-            <Link href="/biblioteca" className="hover:text-cyan-400 transition flex items-center gap-1"><FaBook /> Biblioteca</Link> 
-          </div>
+@app.route('/updates/<path:filename>')
+def download_update_file(filename): return send_from_directory(UPDATES_FOLDER, filename)
 
-          {/* LOGO CENTRAL (GIGANTE h-[400px] Y CENTRADO) */}
-          <div className="flex justify-center items-center mx-auto pointer-events-auto h-full w-1/3 relative">
-            <Link href="/info" className="relative flex items-center justify-center group">
-              {/* AJUSTE FINAL EXTREMO:
-                  - h-[400px]: Tamaño masivo.
-                  - top-1/2 left-1/2: Posición absoluta al centro.
-                  - -translate-x-1/2 -translate-y-1/2: Centrado matemático perfecto.
-              */}
-              <img 
-                src="/nano.png" 
-                alt="NANO-XtremeRTX" 
-                className="absolute h-[400px] w-auto max-w-none object-contain top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 hover:scale-105 transition-transform duration-300 drop-shadow-[0_5px_25px_rgba(0,0,0,0.8)]" 
-              />
-            </Link>
-          </div>
+# --- AUTH ---
+@app.route('/api/register', methods=['POST'])
+def register():
+    d = request.get_json()
+    if User.query.filter_by(username=d.get('username')).first(): return jsonify({"message": "Usuario ocupado"}), 409
+    if User.query.filter_by(email=d.get('email')).first(): return jsonify({"message": "Email ocupado"}), 409
+    new_user = User(username=d.get('username'), hash=bcrypt.generate_password_hash(d.get('password')).decode('utf-8'), email=d.get('email'), identificador=d.get('identificador'), role="gratis", fingerprint=d.get('username').lower())
+    try:
+        db.session.add(new_user)
+        db.session.add(UserFile(owner_username=d.get('username'), name="Archivos de Usuario", type='folder', parent_id=None, size_bytes=0))
+        db.session.commit()
+        ONLINE_USERS[d.get('username')] = datetime.datetime.utcnow()
+        return jsonify({"message": "Registrado"}), 201
+    except Exception as e: db.session.rollback(); return jsonify({"message": str(e)}), 500
 
-          {/* Menú Der */}
-          <div className="hidden md:flex gap-6 text-sm font-medium items-center justify-end w-1/3">
-            <Link href="/buscar" className="hover:text-cyan-400 transition flex items-center gap-1"><FaSearch /> Buscar</Link>
-            <Link href="/procedencia" className="hover:text-cyan-400 transition flex items-center gap-1"><FaFeatherAlt /> Procedencia</Link>
-          </div>
+@app.route('/api/login', methods=['POST'])
+def login():
+    d = request.get_json()
+    u = User.query.filter_by(username=d.get('username')).first()
+    if u and bcrypt.check_password_hash(u.hash, d.get('password')):
+        ONLINE_USERS[u.username] = datetime.datetime.utcnow()
+        return jsonify({"message": "OK", "user": {"username": u.username, "email": u.email, "role": u.role, "identificador": u.identificador, "isAdmin": u.role == 'admin'}}), 200
+    return jsonify({"message": "Credenciales inválidas"}), 401
 
-          {/* Hamburguesa */}
-          <div className="md:hidden absolute top-1/2 -translate-y-1/2 right-6">
-            <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="text-2xl text-white">
-              {isMobileMenuOpen ? <FaTimes /> : <FaBars />}
-            </button>
+@app.route('/api/heartbeat', methods=['POST'])
+def heartbeat():
+    d = request.get_json(); username = d.get('username')
+    if username: ONLINE_USERS[username] = datetime.datetime.utcnow(); return jsonify({"status": "alive"}), 200
+    return jsonify({"msg": "No user"}), 400
 
-            <AnimatePresence>
-              {isMobileMenuOpen && (
-               <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.25 }} className="absolute right-0 mt-6 bg-black/90 backdrop-blur-xl border border-gray-400/40 rounded-2xl p-4 text-sm flex flex-col gap-4 shadow-2xl min-w-[200px]">
-                  <Link href="/descargas" className="hover:text-cyan-400 transition flex items-center gap-2"><FaDownload/> Descargas</Link>
-                  <Link href="/biblioteca" className="hover:text-cyan-400 transition flex items-center gap-2"><FaBook/> Biblioteca</Link>
-                  <Link href="/buscar" className="hover:text-cyan-400 transition flex items-center gap-2"><FaSearch/> Buscar</Link>
-                  <Link href="/procedencia" className="hover:text-cyan-400 transition flex items-center gap-2"><FaFeatherAlt/> Procedencia</Link>
-               </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-      </nav>
+@app.route('/api/logout-signal', methods=['POST'])
+def logout_signal():
+    username = None
+    try:
+        d = request.get_json(silent=True)
+        if d: username = d.get('username')
+        else: username = request.form.get('username')
+    except: pass
+    if username and username in ONLINE_USERS:
+        del ONLINE_USERS[username]
+        return jsonify({"status": "disconnected"}), 200
+    return jsonify({"status": "ignored"}), 200
 
-      {/* --- PANEL INFERIOR / DOCK --- */}
-      <div className="fixed bottom-6 left-0 right-0 z-30 flex flex-col items-center justify-center pointer-events-none">
+@app.route('/api/online-users', methods=['GET'])
+def get_online_users():
+    now = datetime.datetime.utcnow(); limit = now - timedelta(seconds=45)
+    active_list = []; users_to_remove = []
+    for user, last_time in ONLINE_USERS.items():
+        if last_time > limit: active_list.append({"username": user, "last_seen": last_time.isoformat()})
+        else: users_to_remove.append(user)
+    for u in users_to_remove: del ONLINE_USERS[u]
+    return jsonify({"count": len(active_list), "users": active_list}), 200
 
-        {/* Botón Usuario (Izquierda) */}
-        <AnimatePresence>
-            {user && dockOpen && (
-                <motion.div 
-                    initial={{ opacity: 0, x: 20 }} 
-                    animate={{ opacity: 1, x: 0 }} 
-                    exit={{ opacity: 0, x: 20 }} 
-                    className="absolute right-[50%] mr-12 pointer-events-auto"
-                >
-                    <div className="px-4 py-2 rounded-full bg-black/60 border border-gray-400/40 text-xs font-bold backdrop-blur-sm shadow-lg">
-                        <span className={getUserColor(user.role)}>{user.username}</span>
-                    </div>
-                </motion.div>
-            )}
-        </AnimatePresence>
+# --- ADMIN FILES ---
+@app.route('/api/admin/users', methods=['GET'])
+def admin_list():
+    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
+    try:
+        users = User.query.all()
+        return jsonify([{"username": u.username, "email": u.email, "role": u.role, "identificador": u.identificador, "subscriptionEndDate": u.subscription_end} for u in users]), 200
+    except Exception as e: return jsonify({"error": str(e)}), 500
 
-        {/* Botón Central */}
-        <motion.button 
-            onClick={() => { if (!user) goToLogin(); else setDockOpen((s) => !s); }} 
-            whileHover={{ scale: 1.05 }} 
-            whileTap={{ scale: 0.95 }} 
-            className="relative z-40 w-16 h-16 rounded-full border border-gray-400/40 bg-gradient-to-b from-slate-900 to-black flex items-center justify-center pointer-events-auto shadow-lg shadow-cyan-500/10" 
-        >
-          {getDockIcon()}
-        </motion.button>
+@app.route('/api/admin/users/<username>', methods=['PUT'])
+def admin_update(username):
+    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "No"}), 403
+    u = User.query.filter_by(username=username).first(); d = request.get_json()
+    if not u: return jsonify({"msg": "404"}), 404
+    if 'role' in d: u.role = d['role']
+    if 'subscriptionEndDate' in d: u.subscription_end = d['subscriptionEndDate']
+    db.session.commit(); return jsonify({"message": "Actualizado"}), 200
 
-        {/* Botón Cerrar (Derecha) */}
-        <AnimatePresence>
-            {user && dockOpen && (
-                <motion.button 
-                    onClick={handleLogout}
-                    initial={{ opacity: 0, x: -20 }} 
-                    animate={{ opacity: 1, x: 0 }} 
-                    exit={{ opacity: 0, x: -20 }} 
-                    className="absolute left-[50%] ml-12 px-4 py-2 rounded-full bg-red-900/40 border border-red-500/40 text-red-300 text-xs font-bold backdrop-blur-sm hover:bg-red-800/60 transition pointer-events-auto shadow-lg"
-                >
-                    Cerrar
-                </motion.button>
-            )}
-        </AnimatePresence>
+@app.route('/api/admin/users/<username>', methods=['DELETE'])
+def admin_delete(username):
+    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "No"}), 403
+    u = User.query.filter_by(username=username).first()
+    if u: db.session.delete(u); db.session.commit()
+    if username in ONLINE_USERS: del ONLINE_USERS[username]
+    return jsonify({"message": "Eliminado"}), 200
 
-        {/* Menú de Iconos */}
-        {user && (
-          <AnimatePresence>
-            {dockOpen && (
-              <motion.div initial={{ opacity: 0, scaleX: 0, y: 20 }} animate={{ opacity: 1, scaleX: 1, y: 0 }} exit={{ opacity: 0, scaleX: 0, y: 20 }} transition={{ duration: 0.2 }} className="absolute bottom-[75px] flex justify-center z-30 w-full px-4" >
-                <div className="flex items-center gap-3 md:gap-5 px-4 py-3 bg-black/60 backdrop-blur-xl border border-gray-400/40 rounded-full max-w-[95vw] overflow-x-auto scrollbar-hide pointer-events-auto">
-                  {[
-                    { href: "/mensajeria", icon: <FaComments size={18} />, label: "MSG" },
-                    { href: "/miscompras", icon: <FaShoppingCart size={18} />, label: "CMP" },
-                    { href: "/configuracion", icon: <FaCog size={18} />, label: "CFG" },
-                    { href: `/canal/${user?.username || ""}`, icon: <FaUser size={18} />, label: "CAN" },
-                    { href: "/misarchivos", icon: <FaFolderOpen size={18} />, label: "ARC" },
-                    { href: "/subir", icon: <FaFileUpload size={18} />, label: "UPL" },
-                    ...(user?.role === "admin"
-                      ? [{ href: "/documentos", icon: <FaFileAlt size={18} />, label: "DOC" }]
-                      : []),
-                    { 
-                      href: user?.role === "admin" ? "/archivosrecibidos" : "/envioseguro",
-                      icon: user?.role === "admin" ? <FaInbox size={18} /> : <FaShieldAlt size={18} />,
-                      label: user?.role === "admin" ? "RECIBIR" : "CREAR"
-                    }
-                  ].map((btn, i) => (
-                    <div key={i} className="flex flex-col items-center justify-center min-w-[40px]">
-                      <Link href={btn.href} className="w-10 h-10 border border-gray-500/30 rounded-full flex items-center justify-center bg-black/40 hover:bg-cyan-600 hover:border-cyan-400 transition-all">
-                        {btn.icon}
-                      </Link>
-                      <span className="mt-1 text-[9px] text-gray-300 font-bold tracking-wide">{btn.label}</span>
-                    </div>
-                  ))}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        )}
-      </div>
+@app.route('/api/my-files/<username>', methods=['GET'])
+def get_files(username):
+    try:
+        files = UserFile.query.filter_by(owner_username=username).all()
+        return jsonify([{"id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id, "size": f.size_bytes, "size_bytes": f.size_bytes, "path": f.storage_path, "isPublished": f.is_published} for f in files]), 200
+    except: return jsonify([]), 200
 
-      <style jsx global>{`
-        .scrollbar-hide::-webkit-scrollbar { display: none; }
-        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
-      `}</style>
-    </>
-  );
-}
+@app.route('/api/upload-file', methods=['POST'])
+def upload_user_file():
+    try:
+        if 'file' not in request.files: return jsonify({"message": "Falta archivo"}), 400
+        file = request.files['file']; user_id = request.form.get('userId'); parent_id = request.form.get('parentId')
+        user = User.query.filter_by(username=user_id).first()
+        if not user: return jsonify({"message": "Usuario inválido"}), 403
+        filename = secure_filename(file.filename); unique_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+        save_path = os.path.join(UPLOAD_FOLDER, unique_name)
+        file.save(save_path); file_size = os.path.getsize(save_path)
+        if parent_id == 'null' or parent_id == 'undefined': parent_id = None
+        new_file = UserFile(owner_username=user_id, name=filename, type='file', parent_id=parent_id, size_bytes=file_size, storage_path=unique_name)
+        db.session.add(new_file); db.session.commit()
+        return jsonify({"message": "Subido", "newFile": {"id": new_file.id, "name": new_file.name, "type": "file", "parentId": parent_id, "size": file_size, "size_bytes": file_size, "isPublished": False}}), 201
+    except Exception as e: return jsonify({"message": str(e)}), 500
+
+@app.route('/api/create-folder', methods=['POST'])
+def create_folder():
+    try:
+        d = request.get_json()
+        nf = UserFile(owner_username=d.get('userId'), name=d.get('name'), type='folder', parent_id=d.get('parentId'), size_bytes=0)
+        db.session.add(nf); db.session.commit()
+        return jsonify({"newFolder": {"id": nf.id, "name": nf.name, "type": "folder", "parentId": nf.parent_id}}), 201
+    except Exception as e: return jsonify({"message": str(e)}), 500
+
+@app.route('/api/delete-file', methods=['DELETE'])
+def delete_f():
+    try: d = request.get_json(); f = UserFile.query.get(d.get('fileId'));
+    if f: db.session.delete(f); db.session.commit()
+    return jsonify({"message": "Deleted"}), 200
+    except: return jsonify({"message": "Error"}), 500
+
+@app.route('/api/update-file', methods=['POST'])
+def upd_file():
+    try: d = request.get_json(); f = UserFile.query.get(d.get('fileId'))
+    if f: u = d.get('updates', {}); 
+    if 'name' in u: f.name = u['name']; 
+    if 'isPublished' in u: f.is_published = u['isPublished']
+    db.session.commit(); return jsonify({"updatedFile": {"id": f.id}}), 200
+    return jsonify({"msg": "404"}), 404
+    except: return jsonify({"message": "Error"}), 500
+
+@app.route('/get-crs-author', methods=['POST'])
+def inspect_crs_author():
+    try:
+        file = request.files['file']; temp_path = os.path.join(UPLOAD_FOLDER, f"temp_{uuid.uuid4().hex}.crs"); file.save(temp_path)
+        author_id = "N/A"
+        try:
+            with open(temp_path, 'rb') as f: data = pickle.load(f)
+            author_id = data.get('public_author', 'N/A')
+        except: pass
+        finally: 
+            if os.path.exists(temp_path): os.remove(temp_path)
+        return jsonify({"authorId": str(author_id)}), 200
+    except: return jsonify({"error": "Error"}), 500
+
+# =========================================================
+# --- CONSOLAS (ARREGLADAS) ---
+# =========================================================
+
+# --- LOGS HISTÓRICOS (Carpeta 2) ---
+@app.route('/api/logs/historical', methods=['POST', 'GET'])
+def logs(): 
+    if request.method == 'GET':
+        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
+        try:
+            logs = HistoricalLog.query.order_by(HistoricalLog.date.desc()).limit(100).all()
+            return jsonify([{
+                "id": log.id, "user": log.user, "ip": log.ip, "quality": log.quality,
+                # Usa la nueva URL para apuntar a /logs_historical/
+                "url": get_file_url(log.storage_path, 'logs_historical') if log.storage_path else None, 
+                "date": log.date.isoformat()
+            } for log in logs]), 200
+        except Exception as e: return jsonify({"error": str(e)}), 500
+
+    if request.method == 'POST':
+        user = request.headers.get('X-Username'); ip = request.headers.get('X-IP'); quality = request.headers.get('X-Quality')
+        if not user or not ip or not quality: return jsonify({"message": "Faltan datos"}), 400
+        
+        filename_ref = f"{user}_{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')}.log"
+        save_path = os.path.join(LOGS_FOLDER, filename_ref)
+        
+        try:
+            # Guarda el cuerpo del POST (el archivo de log)
+            with open(save_path, 'wb') as f:
+                f.write(request.data)
+                
+            new_log = HistoricalLog(user=user, ip=ip, quality=quality, filename=filename_ref, storage_path=filename_ref, date=datetime.datetime.utcnow())
+            db.session.add(new_log); db.session.commit()
+            return jsonify({"status": "Log registrado", "filename": filename_ref}), 201
+        except Exception as e: return jsonify({"status": f"Error DB: {str(e)}"}), 500
+
+# --- INCIDENTES (Carpeta 4) (ARREGLADO) ---
+@app.route('/api/logs/incident', methods=['POST'])
+def inc(): 
+    try:
+        user = request.form.get('X-Username', request.headers.get('X-Username'))
+        ip = request.form.get('X-IP', request.headers.get('X-IP'))
+        message = request.form.get('message', 'Sin mensaje')
+        
+        if not user or not ip: return jsonify({"message": "Faltan datos de cabecera"}), 400
+
+        file = request.files.get('log_file')
+        storage_name = None
+        filename = "N/A"
+
+        if file:
+            filename = secure_filename(file.filename)
+            storage_name = f"INCIDENT_{user}_{uuid.uuid4().hex[:8]}_{filename}"
+            save_path = os.path.join(INCIDENTS_FOLDER, storage_name)
+            file.save(save_path)
+
+        new_incident = IncidentReport(
+            user=user, ip=ip, message=message, 
+            filename=filename, storage_path=storage_name, 
+            date=datetime.datetime.utcnow()
+        )
+        db.session.add(new_incident)
+        db.session.commit()
+        return jsonify({"status":"Reporte de incidente recibido"}), 201
+        
+    except Exception as e:
+        return jsonify({"status": f"Error al procesar incidente: {str(e)}"}), 500
+
+@app.route('/api/logs/incidents', methods=['GET'])
+def incs(): 
+    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
+    try:
+        reports = IncidentReport.query.order_by(IncidentReport.date.desc()).limit(100).all()
+        return jsonify([{
+            "id": r.id, "user": r.user, "ip": r.ip, "message": r.message,
+            "url": get_file_url(r.storage_path, 'logs_incidents') if r.storage_path else None,
+            "logFile": r.filename, "date": r.date.isoformat()
+        } for r in reports]), 200
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
+
+# --- ACTUALIZACIONES (Carpeta 3) (ARREGLADO) ---
+@app.route('/api/updates/upload', methods=['POST'])
+def upload_update_file_route():
+    # Esta ruta es para 'documentos.jsx'
+    try:
+        # Vercel/HuggingFace envía el archivo en el body, no como 'file'
+        filename = request.headers.get('X-Vercel-Filename')
+        if not filename: return jsonify({"message": "Falta X-Vercel-Filename"}), 400
+        
+        filename = secure_filename(filename)
+        # Extraer versión del nombre, ej: "actualizacion003.py" -> "003"
+        version_str = "".join(filter(str.isdigit, filename)) or "0"
+        
+        save_path = os.path.join(UPDATES_FOLDER, filename)
+        
+        with open(save_path, 'wb') as f:
+            f.write(request.data)
+        
+        file_size = os.path.getsize(save_path)
+        
+        # Borrar la versión vieja si existe
+        existing = UpdateFile.query.filter_by(filename=filename).first()
+        if existing: db.session.delete(existing); db.session.commit()
+
+        new_update = UpdateFile(
+            filename=filename, version=version_str, 
+            size=file_size, storage_path=filename
+        )
+        db.session.add(new_update)
+        db.session.commit()
+        return jsonify({"message": "Actualización subida"}), 201
+
+    except Exception as e:
+        return jsonify({"message": f"Error: {str(e)}"}), 500
+
+@app.route('/api/updates/list', methods=['GET'])
+def list_update_files():
+    # Esta ruta es para 'documentos.jsx'
+    try:
+        updates = UpdateFile.query.order_by(UpdateFile.date.desc()).all()
+        return jsonify([{
+            "id": u.id, "name": u.filename, "version": u.version,
+            "size": u.size, "date": u.date.isoformat()
+        } for u in updates]), 200
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
+@app.route('/api/updates/check', methods=['GET'])
+def chk():
+    # Esta ruta es para 'actualizacion.py'
+    try:
+        # Buscar la actualización más reciente por fecha
+        latest_update = UpdateFile.query.order_by(UpdateFile.date.desc()).first()
+        
+        if not latest_update:
+            return jsonify({"message":"No updates"}), 404
+        
+        # Devolver la URL de descarga y la versión
+        return jsonify({
+            "version": latest_update.version,
+            "file_name": latest_update.filename,
+            "download_url": get_file_url(latest_update.storage_path, 'updates'),
+            "date": latest_update.date.isoformat()
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__': 
+    app.run(host='0.0.0.0', port=7860)
