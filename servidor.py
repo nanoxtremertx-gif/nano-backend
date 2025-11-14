@@ -1,10 +1,11 @@
-# --- servidor.py --- (v10.4 - Full Systems + Log Fix + RUT Validation + Size Bytes Fix)
+# --- servidor.py --- (v10.5 - Safe Mode: RAM Tracking)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
 from werkzeug.utils import secure_filename
 import datetime
+from datetime import timedelta # <--- Único import nuevo necesario
 import uuid
 import os
 import pickle
@@ -17,24 +18,28 @@ except ImportError:
     print("!!! WARN: Numpy no detectado.")
 
 app = Flask(__name__)
-print(">>> INICIANDO SERVIDOR MAESTRO (v10.4 - Size Fix) <<<")
+print(">>> INICIANDO SERVIDOR MAESTRO (v10.5 - Safe Mode) <<<")
 
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 bcrypt = Bcrypt(app)
-# CLAVE MAESTRA: Si va a cambiarla, DEBE CAMBIARLA también en consola_admin.py
 ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
+
+# --- 🛡️ SISTEMA DE RASTREO EN MEMORIA (NO TOCA LA DB) ---
+# Guardaremos: { 'nombre_usuario': datetime_objeto }
+ONLINE_USERS = {} 
+# --------------------------------------------------------
 
 # --- DIRECTORIOS ---
 UPLOAD_FOLDER = os.path.join(os.getcwd(), 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# --- CONEXIÓN DB ---
+# --- CONEXIÓN DB (INTACTA) ---
 db_status = "Desconocido"
 try:
     raw_url = os.environ.get('NEON_URL')
     if not raw_url:
         app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
-        db_status = "SQLite (TEMPORAL - FALTA NEON_URL)"
+        db_status = "SQLite (TEMPORAL)"
     else:
         parsed = urlparse(raw_url)
         scheme = 'postgresql' if parsed.scheme == 'postgres' else parsed.scheme
@@ -49,14 +54,14 @@ except Exception as e:
     print(f"!!! ERROR CRÍTICO DB: {e}")
     db = None
 
-# --- MODELOS ---
+# --- MODELOS (INTACTOS - NO MODIFIQUES ESTO) ---
 class User(db.Model):
     __tablename__ = 'user'
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     hash = db.Column(db.String(255), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    identificador = db.Column(db.String(120), nullable=False) # RUT
+    identificador = db.Column(db.String(120), nullable=False)
     role = db.Column(db.String(20), default="gratis")
     fingerprint = db.Column(db.String(80), nullable=True)
     subscription_end = db.Column(db.String(50), nullable=True)
@@ -77,7 +82,6 @@ class UserFile(db.Model):
     tags = db.Column(db.String(500), nullable=True)
     price = db.Column(db.Float, default=0.0)
 
-# Modelos Legacy
 class HistoricalLog(db.Model):
     __tablename__ = 'historical_log'
     id = db.Column(db.Integer, primary_key=True)
@@ -102,27 +106,23 @@ with app.app_context():
 # --- ÚTILES ---
 def get_file_url(filename):
     if not filename: return None
-    # Esta URL permite descargar el archivo del servidor de Hugging Face
     return f"{request.host_url}uploads/{filename}"
 
 # --- RUTAS ---
 @app.route('/')
-def health_check(): return jsonify({"status": "v10.4 ONLINE (Size Fix)", "db": db_status}), 200
+def health_check(): return jsonify({"status": "v10.5 SAFE MODE ONLINE", "db": db_status}), 200
 
 @app.route('/uploads/<path:filename>')
 def download_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
 
-# --- 1. AUTENTICACIÓN (CREA CARPETA RAÍZ AL REGISTRAR) ---
+# --- AUTENTICACIÓN ---
 @app.route('/api/register', methods=['POST'])
 def register():
     d = request.get_json()
     if User.query.filter_by(username=d.get('username')).first(): return jsonify({"message": "Usuario ocupado"}), 409
     if User.query.filter_by(email=d.get('email')).first(): return jsonify({"message": "Email ocupado"}), 409
-    
-    # --- NUEVA VALIDACIÓN DE IDENTIFICADOR/RUT ---
     if User.query.filter_by(identificador=d.get('identificador')).first(): 
-        return jsonify({"message": "Este Identificador/RUT ya está registrado"}), 409
-    # ---------------------------------------------
+        return jsonify({"message": "Identificador ocupado"}), 409
     
     new_user = User(
         username=d.get('username'), hash=bcrypt.generate_password_hash(d.get('password')).decode('utf-8'),
@@ -132,19 +132,13 @@ def register():
     
     try:
         db.session.add(new_user)
-        
-        # --- FIX: CREAR CARPETA RAÍZ POR DEFECTO ---
-        root_folder = UserFile(
-            owner_username=d.get('username'),
-            name="Archivos de Usuario",
-            type='folder',
-            parent_id=None, # La raíz es NULL
-            size_bytes=0
-        )
+        root_folder = UserFile(owner_username=d.get('username'), name="Archivos de Usuario", type='folder', parent_id=None, size_bytes=0)
         db.session.add(root_folder)
-        # ---------------------------------------------
-        
         db.session.commit()
+        
+        # Al registrarse, lo ponemos online en RAM
+        ONLINE_USERS[d.get('username')] = datetime.datetime.utcnow()
+        
         return jsonify({"message": "Registrado"}), 201
     except Exception as e: 
         db.session.rollback()
@@ -155,19 +149,75 @@ def login():
     d = request.get_json()
     u = User.query.filter_by(username=d.get('username')).first()
     if u and bcrypt.check_password_hash(u.hash, d.get('password')):
+        
+        # ✅ MODO SEGURO: Solo actualizamos la variable en RAM
+        ONLINE_USERS[u.username] = datetime.datetime.utcnow()
+        
         return jsonify({"message": "OK", "user": {"username": u.username, "email": u.email, "role": u.role, "identificador": u.identificador, "isAdmin": u.role == 'admin'}}), 200
     return jsonify({"message": "Credenciales inválidas"}), 401
 
-# --- 2. ADMIN API (VIP) ---
+# --- 🛡️ RUTAS NUEVAS (100% SEGURAS - NO USAN DB) ---
+
+@app.route('/api/heartbeat', methods=['POST'])
+def heartbeat():
+    """El frontend avisa que sigue vivo"""
+    d = request.get_json()
+    username = d.get('username')
+    if username:
+        # Guardamos la hora actual en RAM
+        ONLINE_USERS[username] = datetime.datetime.utcnow()
+        return jsonify({"status": "alive"}), 200
+    return jsonify({"msg": "No user"}), 400
+
+@app.route('/api/online-users', methods=['GET'])
+def get_online_users():
+    """Calcula quién está online basándose en la RAM"""
+    now = datetime.datetime.utcnow()
+    limit = now - timedelta(minutes=2) # Umbral de 2 minutos
+    
+    # Limpiamos usuarios viejos de la memoria y creamos la lista
+    active_list = []
+    users_to_remove = []
+    
+    for user, last_time in ONLINE_USERS.items():
+        if last_time > limit:
+            active_list.append({"username": user, "last_seen": last_time.isoformat()})
+        else:
+            users_to_remove.append(user)
+            
+    # Borramos los inactivos para no llenar la RAM
+    for u in users_to_remove:
+        del ONLINE_USERS[u]
+
+    return jsonify({
+        "count": len(active_list),
+        "users": active_list
+    }), 200
+
+# ----------------------------------------------------
+
+# --- ADMIN API ---
 @app.route('/api/admin/users', methods=['GET'])
 def admin_list():
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
     try:
         users = User.query.all()
-        return jsonify([{
-            "username": u.username, "email": u.email, "role": u.role, 
-            "identificador": u.identificador, "subscriptionEndDate": u.subscription_end
-        } for u in users]), 200
+        # Cruzamos datos de DB con datos de RAM para saber si están online
+        limit = datetime.datetime.utcnow() - timedelta(minutes=2)
+        
+        response_data = []
+        for u in users:
+            is_online = False
+            if u.username in ONLINE_USERS and ONLINE_USERS[u.username] > limit:
+                is_online = True
+                
+            response_data.append({
+                "username": u.username, "email": u.email, "role": u.role, 
+                "identificador": u.identificador, "subscriptionEndDate": u.subscription_end,
+                "isOnline": is_online # <--- Dato extra sin tocar DB
+            })
+            
+        return jsonify(response_data), 200
     except Exception as e: return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/users/<username>', methods=['PUT'])
@@ -186,23 +236,19 @@ def admin_delete(username):
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "No"}), 403
     u = User.query.filter_by(username=username).first()
     if u: db.session.delete(u); db.session.commit()
+    if username in ONLINE_USERS: del ONLINE_USERS[username]
     return jsonify({"message": "Eliminado"}), 200
 
-# --- 3. ARCHIVOS (CORREGIDO PARA ENVIAR BYTES) ---
+# --- ARCHIVOS ---
 @app.route('/api/my-files/<username>', methods=['GET'])
 def get_files(username):
     try:
         files = UserFile.query.filter_by(owner_username=username).all()
         return jsonify([
             {
-                "id": f.id, 
-                "name": f.name, 
-                "type": f.type, 
-                "parentId": f.parent_id, 
-                "size": f"{f.size_bytes/1048576:.2f} MB", 
-                "size_bytes": f.size_bytes,  # <--- NUEVO CAMPO IMPORTANTE
-                "path": f.storage_path, 
-                "isPublished": f.is_published
+                "id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id, 
+                "size": f"{f.size_bytes/1048576:.2f} MB", "size_bytes": f.size_bytes, 
+                "path": f.storage_path, "isPublished": f.is_published
             } 
             for f in files
         ]), 200
@@ -228,17 +274,12 @@ def upload_user_file():
         new_file = UserFile(owner_username=user_id, name=filename, type='file', parent_id=parent_id, size_bytes=file_size, storage_path=unique_name)
         db.session.add(new_file); db.session.commit()
         
-        # RESPUESTA MEJORADA PARA ACTUALIZAR FRONTEND AL INSTANTE
         return jsonify({
             "message": "Subido", 
             "newFile": {
-                "id": new_file.id, 
-                "name": new_file.name,
-                "type": "file",
-                "parentId": parent_id,
-                "size": f"{file_size/1048576:.2f} MB",
-                "size_bytes": file_size, # <--- NECESARIO PARA EL CONTADOR
-                "isPublished": False
+                "id": new_file.id, "name": new_file.name, "type": "file",
+                "parentId": parent_id, "size": f"{file_size/1048576:.2f} MB",
+                "size_bytes": file_size, "isPublished": False
             }
         }), 201
     except Exception as e: return jsonify({"message": str(e)}), 500
@@ -287,75 +328,36 @@ def inspect_crs_author():
         return jsonify({"authorId": str(author_id)}), 200
     except: return jsonify({"error": "Error"}), 500
 
-# =========================================================================
-# --- 4. CONSOLAS (LÓGICA CORREGIDA) ---
-# =========================================================================
-
+# --- CONSOLAS ---
 @app.route('/api/logs/historical', methods=['POST', 'GET'])
 def logs(): 
-    # LOGICA DE LECTURA (GET) - Leer logs históricos
     if request.method == 'GET':
-        # 1. AUTENTICACIÓN ADMIN
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: 
-            return jsonify({"msg": "Acceso denegado. Clave incorrecta."}), 403
-        
-        # 2. LECTURA DE DATOS DESDE DB
+        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         try:
-            # Ordenamos por fecha descendente y limitamos a los 100 más recientes
             logs = HistoricalLog.query.order_by(HistoricalLog.date.desc()).limit(100).all()
             return jsonify([{
-                "id": log.id,
-                "user": log.user,
-                "ip": log.ip,
-                "quality": log.quality,
-                # La URL referencia el archivo que debe estar en /uploads
-                "url": get_file_url(log.filename) if log.filename else 'Sin URL',
-                "date": log.date.isoformat()
+                "id": log.id, "user": log.user, "ip": log.ip, "quality": log.quality,
+                "url": get_file_url(log.filename) if log.filename else 'Sin URL', "date": log.date.isoformat()
             } for log in logs]), 200
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
+        except Exception as e: return jsonify({"error": str(e)}), 500
 
-    # LOGICA DE ESCRITURA (POST) - Guardar log enviado por el cliente
     if request.method == 'POST':
-        user = request.headers.get('X-Username')
-        ip = request.headers.get('X-IP')
-        quality = request.headers.get('X-Quality')
-        
-        if not user or not ip or not quality:
-            return jsonify({"message": "Faltan encabezados (Username, IP, Quality)"}), 400
-
-        # Crear un nombre de archivo de referencia único
+        user = request.headers.get('X-Username'); ip = request.headers.get('X-IP'); quality = request.headers.get('X-Quality')
+        if not user or not ip or not quality: return jsonify({"message": "Faltan datos"}), 400
         filename_ref = f"{user}_{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')}.log"
-        
-        # 1. CREAR ENTRADA EN DB (Metadatos)
-        new_log = HistoricalLog(
-            user=user, ip=ip, quality=quality, 
-            filename=filename_ref,
-            date=datetime.datetime.utcnow()
-        )
-        
-        # 2. Guardar a DB
+        new_log = HistoricalLog(user=user, ip=ip, quality=quality, filename=filename_ref, date=datetime.datetime.utcnow())
         try:
-            db.session.add(new_log)
-            db.session.commit()
-            # La respuesta 201 es la que el cliente necesita para decir "LOG ENVIADO EXITOSAMENTE"
-            return jsonify({"status": "Log registrado en DB", "filename": filename_ref}), 201
-        except Exception as e:
-            db.session.rollback()
-            return jsonify({"status": f"Error DB al guardar log: {str(e)}"}), 500
+            db.session.add(new_log); db.session.commit()
+            return jsonify({"status": "Log registrado", "filename": filename_ref}), 201
+        except Exception as e: return jsonify({"status": f"Error DB: {str(e)}"}), 500
 
 @app.route('/api/logs/incident', methods=['POST'])
-def inc(): 
-    # Lógica para incidentes. Se deja como stub para no afectar funcionalidad de files.
-    return jsonify({"status":"OK"}), 201
+def inc(): return jsonify({"status":"OK"}), 201
 
 @app.route('/api/logs/incidents', methods=['GET'])
 def incs(): 
-    # Lógica para leer incidentes. Se deja como lista vacía, pero con autenticación.
-    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: 
-        return jsonify({"msg": "Acceso denegado"}), 403
+    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
     return jsonify([]), 200
-
 
 @app.route('/api/updates/check', methods=['GET'])
 def chk(): return jsonify({"message":"No updates"}), 404
