@@ -4,10 +4,10 @@ from flask_sqlalchemy import SQLAlchemy
 import datetime
 import uuid
 
-# 1. Creamos las extensiones SIN conectarlas a la app
+# 1. Creamos la extensión SIN conectarla a la app
 db = SQLAlchemy()
 
-# 2. Definimos todos los modelos (esto ahora es seguro)
+# 2. Definimos todos los modelos
 class User(db.Model):
     __tablename__ = 'user'
     id = db.Column(db.Integer, primary_key=True)
