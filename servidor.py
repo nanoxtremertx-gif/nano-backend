@@ -1,4 +1,4 @@
-# --- servidor.py --- (v17.2 - CORRECCIÓN DE ARRANQUE DE GUNICORN)
+# --- servidor.py --- (v17.3 - CORRECCIÓN DE ARRANQUE DE GUNICORN)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -14,8 +14,7 @@ from urllib.parse import urlparse, urlunparse
 from sqlalchemy import text 
 
 app = Flask(__name__)
-# EL PRINT AHORA ESTÁ DESPUÉS DE 'app', ANTES DE CUALQUIER LÓGICA
-print(">>> INICIANDO SERVIDOR MAESTRO (v17.2 - Arranque Estable) <<<")
+print(">>> INICIANDO SERVIDOR MAESTRO (v17.3 - Arranque Estable) <<<")
 
 # --- Configuración de Sockets ---
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
@@ -52,8 +51,10 @@ for sub in SUB_DOC_FOLDERS:
     os.makedirs(os.path.join(DOCS_FOLDER, sub), exist_ok=True)
 
 
-# --- DB Setup ---
+# --- DB Setup (CORREGIDO) ---
 db_status = "Desconocido"
+db = SQLAlchemy() # <-- 1. INICIALIZA VACÍO
+
 try:
     raw_url = os.environ.get('NEON_URL')
     if not raw_url:
@@ -65,13 +66,14 @@ try:
         clean_url = urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).strip("'").strip()
         if 'postgresql' in clean_url and 'sslmode' not in clean_url:
             clean_url += "?sslmode=require"
-        app.config['SQLALCHEMY_DATABASE_URI'] = clean_url
+        app.config['SQLALCHEMY_DATABASE_URI'] = clean_url # <-- 2. CONFIGURA LA APP
         db_status = "Neon PostgreSQL (REAL)"
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    db = SQLAlchemy(app)
 except Exception as e:
     print(f"!!! ERROR CRÍTICO DB: {e}")
-    db = None
+
+db.init_app(app) # <-- 3. CONECTA LA DB A LA APP
+# --- FIN DE LA CORRECCIÓN ---
 
 # --- Modelos ---
 class User(db.Model):
@@ -136,9 +138,7 @@ class DocGestion(db.Model):
     size = db.Column(db.Integer)
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
-# --- ¡¡AQUÍ ESTÁ LA CORRECCIÓN!! ---
-# 'db.create_all()' NO debe estar en el scope global.
-# Lo movemos a un comando separado que puedes correr UNA SOLA VEZ si es necesario.
+# Ruta para crear tablas (opcional, si es necesario)
 @app.route('/admin/create_tables', methods=['GET'])
 def create_tables():
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY:
@@ -164,9 +164,8 @@ def format_file_size(size_bytes):
 
 # --- Rutas de Descarga ---
 @app.route('/')
-def health_check(): return jsonify({"status": "v17.2 ONLINE (Sockets Activos)", "db": db_status}), 200
+def health_check(): return jsonify({"status": "v17.3 ONLINE (Sockets Activos)", "db": db_status}), 200
 
-# (El resto de tus rutas de descarga, sockets, auth, admin, etc. son idénticas)
 @app.route('/uploads/<path:filename>')
 def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
 @app.route('/logs_historical/<path:filename>')
