@@ -1,4 +1,4 @@
-# --- servidor.py --- (v17.4 - CORRECCIÓN DE ORDEN DE INICIALIZACIÓN DE DB)
+# --- servidor.py --- (v17.5 - CORRECCIÓN DEL PARSEO DE NEON_URL)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -14,7 +14,7 @@ from urllib.parse import urlparse, urlunparse
 from sqlalchemy import text 
 
 app = Flask(__name__)
-print(">>> INICIANDO SERVIDOR MAESTRO (v17.4 - Arranque Estable) <<<")
+print(">>> INICIANDO SERVIDOR MAESTRO (v17.5 - Arranque Estable) <<<")
 
 # --- 1. CONFIGURACIÓN DE APP (ANTES DE INICIALIZAR DB) ---
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -26,12 +26,15 @@ try:
         app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
         db_status = "SQLite (TEMPORAL)"
     else:
+        # --- ¡¡ESTAS LÍNEAS FALTABAN!! ---
         parsed = urlparse(raw_url)
         scheme = 'postgresql' if parsed.scheme == 'postgres' else parsed.scheme
         clean_url = urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).strip("'").strip()
         if 'postgresql' in clean_url and 'sslmode' not in clean_url:
             clean_url += "?sslmode=require"
-        app.config['SQLALCHEMY_DATABASE_URI'] = clean_url # <-- CONFIGURA LA APP
+        # --- FIN DE LA CORRECCIÓN ---
+            
+        app.config['SQLALCHEMY_DATABASE_URI'] = clean_url # <-- Ahora 'clean_url' existe
         db_status = "Neon PostgreSQL (REAL)"
 except Exception as e:
     print(f"!!! ERROR CRÍTICO AL CONFIGURAR DB: {e}")
@@ -162,7 +165,7 @@ def format_file_size(size_bytes):
 
 # --- Rutas de Descarga ---
 @app.route('/')
-def health_check(): return jsonify({"status": "v17.4 ONLINE (Sockets Activos)", "db": db_status}), 200
+def health_check(): return jsonify({"status": "v17.5 ONLINE (Sockets Activos)", "db": db_status}), 200
 
 # (El resto de tus rutas de descarga, sockets, auth, admin, etc. son idénticas)
 @app.route('/uploads/<path:filename>')
