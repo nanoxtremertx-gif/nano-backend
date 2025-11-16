@@ -1,4 +1,4 @@
-# --- servidor.py --- (v17.1 - FINAL con DELETE de Docs y Vencimiento de Subs)
+# --- servidor.py --- (v17.2 - CORRECCIÓN DE ARRANQUE DE GUNICORN)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -14,7 +14,8 @@ from urllib.parse import urlparse, urlunparse
 from sqlalchemy import text 
 
 app = Flask(__name__)
-print(">>> INICIANDO SERVIDOR MAESTRO (v17.1 - Arranque Estable con Sockets y Delete) <<<")
+# EL PRINT AHORA ESTÁ DESPUÉS DE 'app', ANTES DE CUALQUIER LÓGICA
+print(">>> INICIANDO SERVIDOR MAESTRO (v17.2 - Arranque Estable) <<<")
 
 # --- Configuración de Sockets ---
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
@@ -46,7 +47,6 @@ BIBLIOTECA_PUBLIC_FOLDER = os.path.join(BASE_DIR, 'biblioteca_publica')
 for folder in [UPLOAD_FOLDER, LOGS_FOLDER, UPDATES_FOLDER, INCIDENTS_FOLDER, DOCS_FOLDER, BIBLIOTECA_PUBLIC_FOLDER]:
     os.makedirs(folder, exist_ok=True)
 
-# Aseguramos que existan las carpetas que 'vip.py' y 'consola_admin.py' esperan
 SUB_DOC_FOLDERS = ['desarrollo', 'gestion', 'operaciones']
 for sub in SUB_DOC_FOLDERS:
     os.makedirs(os.path.join(DOCS_FOLDER, sub), exist_ok=True)
@@ -136,8 +136,19 @@ class DocGestion(db.Model):
     size = db.Column(db.Integer)
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
-with app.app_context():
-    if db: db.create_all()
+# --- ¡¡AQUÍ ESTÁ LA CORRECCIÓN!! ---
+# 'db.create_all()' NO debe estar en el scope global.
+# Lo movemos a un comando separado que puedes correr UNA SOLA VEZ si es necesario.
+@app.route('/admin/create_tables', methods=['GET'])
+def create_tables():
+    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY:
+        return jsonify({"msg": "Acceso denegado"}), 403
+    try:
+        with app.app_context():
+            db.create_all()
+        return jsonify({"message": "Tablas creadas (o ya existían)."}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # --- Útiles ---
 def get_file_url(filename, folder_route='uploads'):
@@ -153,8 +164,9 @@ def format_file_size(size_bytes):
 
 # --- Rutas de Descarga ---
 @app.route('/')
-def health_check(): return jsonify({"status": "v17.1 ONLINE (Sockets Activos)", "db": db_status}), 200
+def health_check(): return jsonify({"status": "v17.2 ONLINE (Sockets Activos)", "db": db_status}), 200
 
+# (El resto de tus rutas de descarga, sockets, auth, admin, etc. son idénticas)
 @app.route('/uploads/<path:filename>')
 def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
 @app.route('/logs_historical/<path:filename>')
@@ -193,7 +205,7 @@ def register():
         db.session.add(UserFile(owner_username=d.get('username'), name="Archivos de Usuario", type='folder', parent_id=None, size_bytes=0))
         db.session.commit()
         ONLINE_USERS[d.get('username')] = datetime.datetime.utcnow()
-        emit_online_count() # <-- Avisa a todos
+        emit_online_count()
         return jsonify({"message": "Registrado"}), 201
     except Exception as e: db.session.rollback(); return jsonify({"message": str(e)}), 500
 
@@ -203,7 +215,7 @@ def login():
     u = User.query.filter_by(username=d.get('username')).first()
     if u and bcrypt.check_password_hash(u.hash, d.get('password')):
         ONLINE_USERS[u.username] = datetime.datetime.utcnow()
-        emit_online_count() # <-- Avisa a todos
+        emit_online_count()
         return jsonify({"message": "OK", "user": {"username": u.username, "email": u.email, "role": u.role, "identificador": u.identificador, "isAdmin": u.role == 'admin'}}), 200
     return jsonify({"message": "Credenciales inválidas"}), 401
 
@@ -223,7 +235,7 @@ def logout_signal():
     except: pass
     if username and username in ONLINE_USERS:
         del ONLINE_USERS[username]
-        emit_online_count() # <-- Avisa a todos
+        emit_online_count()
         return jsonify({"status": "disconnected"}), 200
     return jsonify({"status": "ignored"}), 200
 
@@ -237,12 +249,11 @@ def get_online_users():
     
     if len(users_to_remove) > 0:
         for u in users_to_remove: del ONLINE_USERS[u]
-        emit_online_count() # <-- Avisa si alguien expira
+        emit_online_count()
         
     return jsonify({"count": len(active_list), "users": active_list}), 200
 
 # --- Rutas de Admin (usadas por vip.py) ---
-
 @app.route('/api/admin/users', methods=['GET'])
 def admin_list():
     """ Esta ruta es usada por vip.py para la gestión de usuarios. """
@@ -252,33 +263,25 @@ def admin_list():
         users = User.query.all()
         user_list = []
         
-        # --- ¡NUEVO! LÓGICA DE VENCIMIENTO (como pediste) ---
         users_changed = False
         for u in users:
-            # Si es 'pro' y tiene fecha de vencimiento
             if u.role == 'pro' and u.subscription_end:
                 try:
-                    # Compara la fecha de vencimiento con la de hoy
                     if u.subscription_end.split("T")[0] < today_str:
-                        u.role = 'gratis' # Vuelve a gratis
+                        u.role = 'gratis'
                         u.subscription_end = None
                         users_changed = True
                 except Exception as e:
                     print(f"Error al parsear fecha de suscripción para {u.username}: {e}")
             
             user_list.append({
-                "username": u.username, 
-                "email": u.email, 
-                "role": u.role, # Envía el rol actualizado
-                "identificador": u.identificador, 
-                "subscriptionEndDate": u.subscription_end # Envía la fecha actualizada (o None)
+                "username": u.username, "email": u.email, "role": u.role,
+                "identificador": u.identificador, "subscriptionEndDate": u.subscription_end
             })
         
-        # Si se cambió algún usuario, guardar en la DB
         if users_changed:
             db.session.commit()
             print("INFO: Se han actualizado los roles de usuarios vencidos.")
-        # --- FIN DE LÓGICA ---
             
         return jsonify(user_list), 200
     except Exception as e: 
@@ -307,22 +310,18 @@ def admin_delete(username):
 # --- Rutas de Archivos de Usuario (misarchivos.jsx) ---
 @app.route('/api/my-files/<username>', methods=['GET'])
 def get_files(username):
-    """ Esta ruta es la que usa 'misarchivos.jsx'. Envía todos los datos necesarios. """
     try:
         files = UserFile.query.filter_by(owner_username=username).all()
         file_list = []
         for f in files:
             file_list.append({
                 "id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id,
-                "size_bytes": f.size_bytes,
-                "size": format_file_size(f.size_bytes), # <- Dato clave
+                "size_bytes": f.size_bytes, "size": format_file_size(f.size_bytes),
                 "path": get_file_url(f.storage_path, 'uploads'),
-                "isPublished": f.is_published,
-                "date": f.created_at.strftime('%Y-%m-%d'), # <- Dato clave
-                "verificationStatus": f.verification_status, # <- Dato clave
+                "isPublished": f.is_published, "date": f.created_at.strftime('%Y-%m-%d'),
+                "verificationStatus": f.verification_status,
                 "monetization": {"enabled": f.price > 0, "price": f.price},
-                "description": f.description,
-                "tags": f.tags.split(',') if f.tags else []
+                "description": f.description, "tags": f.tags.split(',') if f.tags else []
             })
         return jsonify(file_list), 200
     except Exception as e: 
@@ -331,13 +330,12 @@ def get_files(username):
 
 @app.route('/api/upload-file', methods=['POST'])
 def upload_user_file():
-    """ Esta ruta es la que usa 'subir.jsx'. Guarda el verificationStatus. """
     try:
         if 'file' not in request.files: return jsonify({"message": "Falta archivo"}), 400
         file = request.files['file']
         user_id = request.form.get('userId')
         parent_id = request.form.get('parentId')
-        verification_status = request.form.get('verificationStatus', 'N/A') # <-- Recibe el status
+        verification_status = request.form.get('verificationStatus', 'N/A')
 
         user = User.query.filter_by(username=user_id).first()
         if not user: return jsonify({"message": "Usuario inválido"}), 403
@@ -355,9 +353,8 @@ def upload_user_file():
 
         new_file = UserFile(
             owner_username=user_id, name=filename, type='file', 
-            parent_id=parent_id, # <-- Usa el ID real
-            size_bytes=file_size, storage_path=unique_name,
-            verification_status=verification_status # <-- Guarda el status
+            parent_id=parent_id, size_bytes=file_size, storage_path=unique_name,
+            verification_status=verification_status
         )
         
         db.session.add(new_file); db.session.commit()
@@ -377,7 +374,6 @@ def upload_user_file():
 
 @app.route('/api/create-folder', methods=['POST'])
 def create_folder():
-    """ Esta ruta es la que usa 'misarchivos.jsx' y 'subir.jsx'. """
     try:
         d = request.get_json()
         parent_id = d.get('parentId')
@@ -416,14 +412,13 @@ def delete_f():
 
 @app.route('/api/update-file', methods=['POST'])
 def upd_file():
-    """ Esta ruta es la que usa 'misarchivos.jsx' para publicar. """
     try: 
         d = request.get_json()
         f = UserFile.query.get(d.get('fileId'))
         if f: 
             u = d.get('updates', {})
             if 'name' in u: f.name = u['name']
-            if 'isPublished' in u: f.is_published = u['isPublished'] # <-- Mueve a la biblioteca
+            if 'isPublished' in u: f.is_published = u['isPublished']
             if 'description' in u: f.description = u['description']
             if 'tags' in u: f.tags = ",".join(u['tags'])
             if 'monetization' in u:
@@ -468,7 +463,6 @@ def get_gestion_docs(section):
     if section not in SUB_DOC_FOLDERS: return jsonify({"msg": "Sección inválida"}), 400
     try:
         docs = DocGestion.query.filter_by(section=section).all()
-        # Esta estructura la leen 'vip.py', 'consola_admin.py' y 'documentos.jsx'
         return jsonify([{
             "id": d.id, "name": d.name, "size": d.size, "date": d.created_at.isoformat(),
             "url": get_file_url(os.path.join(section, d.storage_path), 'documentos_gestion')
@@ -477,7 +471,6 @@ def get_gestion_docs(section):
 
 @app.route('/api/documentos/upload', methods=['POST'])
 def upload_gestion_doc():
-    # Esta ruta la usan 'vip.py' y 'consola_admin.py'
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
     try:
         if 'file' not in request.files or 'section' not in request.form: return jsonify({"message": "Faltan datos"}), 400
@@ -496,7 +489,6 @@ def upload_gestion_doc():
         return jsonify({"message": "Documento subido"}), 201
     except Exception as e: return jsonify({"message": f"Error: {str(e)}"}), 500
 
-# --- ¡¡NUEVA RUTA DE BORRADO (Para vip.py y consola_admin.py)!! ---
 @app.route('/api/documentos/delete/<int:doc_id>', methods=['DELETE'])
 def delete_gestion_doc(doc_id):
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: 
@@ -506,7 +498,6 @@ def delete_gestion_doc(doc_id):
         if not doc:
             return jsonify({"message": "Documento no encontrado"}), 404
         
-        # 1. Borrar archivo físico
         if doc.storage_path:
             try:
                 file_path = os.path.join(DOCS_FOLDER, doc.section, doc.storage_path)
@@ -515,7 +506,6 @@ def delete_gestion_doc(doc_id):
             except Exception as e:
                 print(f"Error al borrar archivo físico del doc: {e}")
         
-        # 2. Borrar registro de la DB
         db.session.delete(doc)
         db.session.commit()
         return jsonify({"message": "Documento eliminado"}), 200
