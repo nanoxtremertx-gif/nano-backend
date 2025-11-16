@@ -1,4 +1,4 @@
-# --- servidor.py --- (v17.5 - CORRECCIÓN DE FALLBACK DE DB)
+# --- servidor.py --- (v17.6 - Separación de Modelos)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -13,16 +13,18 @@ import pickle
 from urllib.parse import urlparse, urlunparse
 from sqlalchemy import text 
 
-app = Flask(__name__)
-print(">>> INICIANDO SERVIDOR MAESTRO (v17.5 - Arranque Estable) <<<")
+# --- 1. IMPORTAR MODELOS Y DB ---
+from models import db, User, UserFile, HistoricalLog, IncidentReport, UpdateFile, DocGestion
 
-# --- 1. CONFIGURACIÓN DE APP (ANTES DE INICIALIZAR DB) ---
+app = Flask(__name__)
+print(">>> INICIANDO SERVIDOR MAESTRO (v17.6 - Arranque Estable) <<<")
+
+# --- 2. CONFIGURACIÓN DE APP (ANTES DE INICIALIZAR DB) ---
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db_status = "Desconocido"
 try:
     raw_url = os.environ.get('NEON_URL')
     if not raw_url:
-        # Si no hay URL, forzamos un error para saltar al 'except'
         raise ValueError("NEON_URL no encontrada.")
     
     parsed = urlparse(raw_url)
@@ -31,96 +33,33 @@ try:
     if 'postgresql' in clean_url and 'sslmode' not in clean_url:
         clean_url += "?sslmode=require"
     
-    app.config['SQLALCHEMY_DATABASE_URI'] = clean_url # <-- CONFIGURA LA APP
+    app.config['SQLALCHEMY_DATABASE_URI'] = clean_url
     db_status = "Neon PostgreSQL (REAL)"
     print(f"Base de datos configurada: {db_status}")
 
 except Exception as e:
-    # --- ¡¡AQUÍ ESTÁ LA CORRECCIÓN!! ---
-    # Si 'try' falla (ej. NEON_URL no existe), usamos SQLite como fallback.
     print(f"!!! ERROR CRÍTICO AL CONFIGURAR DB: {e}")
     print("!!! USANDO SQLITE COMO FALLBACK.")
     app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
     db_status = "SQLite (FALLBACK)"
-# --- FIN DE LA CORRECCIÓN ---
 
-
-# --- 2. INICIALIZACIÓN DE EXTENSIONES (DESPUÉS DE CONFIGURAR APP) ---
+# --- 3. INICIALIZACIÓN DE EXTENSIONES ---
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 socketio = SocketIO(app, cors_allowed_origins="*")
 bcrypt = Bcrypt(app)
-db = SQLAlchemy(app) # <-- Se inicializa aquí, con la app ya configurada
+db.init_app(app) # <-- Conecta la 'db' importada a nuestra 'app'
 
 ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
 
-# --- 3. DEFINICIÓN DE MODELOS (AHORA 'db.Model' EXISTE) ---
-class User(db.Model):
-    __tablename__ = 'user'
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    hash = db.Column(db.String(255), nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    identificador = db.Column(db.String(120), nullable=False)
-    role = db.Column(db.String(20), default="gratis")
-    fingerprint = db.Column(db.String(80), nullable=True)
-    subscription_end = db.Column(db.String(50), nullable=True) # vip.py usa esto
-    files = db.relationship('UserFile', backref='owner', lazy=True)
-
-class UserFile(db.Model):
-    __tablename__ = 'user_file'
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    owner_username = db.Column(db.String(80), db.ForeignKey('user.username'), nullable=False)
-    parent_id = db.Column(db.String(36), nullable=True)
-    name = db.Column(db.String(255), nullable=False)
-    type = db.Column(db.String(20), nullable=False)
-    size_bytes = db.Column(db.BigInteger, default=0)
-    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    storage_path = db.Column(db.String(500), nullable=True)
-    is_published = db.Column(db.Boolean, default=False)
-    description = db.Column(db.Text, nullable=True)
-    tags = db.Column(db.String(500), nullable=True)
-    price = db.Column(db.Float, default=0.0)
-    verification_status = db.Column(db.String(20), nullable=True, default='N/A') 
-
-class HistoricalLog(db.Model):
-    __tablename__ = 'historical_log'
-    id = db.Column(db.Integer, primary_key=True)
-    user = db.Column(db.String(80)); ip = db.Column(db.String(50)); quality = db.Column(db.String(50))
-    filename = db.Column(db.String(255))
-    storage_path = db.Column(db.String(500))
-    date = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-
-class IncidentReport(db.Model):
-    __tablename__ = 'incident_report'
-    id = db.Column(db.Integer, primary_key=True)
-    user = db.Column(db.String(80)); ip = db.Column(db.String(50)); message = db.Column(db.Text)
-    filename = db.Column(db.String(255))
-    storage_path = db.Column(db.String(500))
-    date = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-
-class UpdateFile(db.Model):
-    __tablename__ = 'update_file'
-    id = db.Column(db.Integer, primary_key=True)
-    filename = db.Column(db.String(255)) 
-    version = db.Column(db.String(50))
-    size = db.Column(db.Integer)
-    date = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    storage_path = db.Column(db.String(500), nullable=True)
-
-class DocGestion(db.Model):
-    __tablename__ = 'doc_gestion'
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(255), nullable=False)
-    section = db.Column(db.String(50), nullable=False) 
-    storage_path = db.Column(db.String(500), nullable=True)
-    size = db.Column(db.Integer)
-    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+# (El resto del código: ONLINE_USERS, emit_online_count, Directorios, create_tables, Útiles, 
+# Rutas de Descarga, Manejadores de Socket.IO, Rutas de Auth, Rutas de Admin, 
+# Rutas de Archivos, Rutas de Documentos, Rutas de Consola, y Rutas de Biblioteca
+# es EXACTAMENTE IGUAL que en la v17.1/v17.2/v17.3/v17.4/v17.5)
 
 # --- Memoria RAM (Usuarios Online) ---
 ONLINE_USERS = {} 
 
 def emit_online_count():
-    """ Emite el recuento actual de usuarios a TODOS los clientes conectados. """
     try:
         count = len(ONLINE_USERS)
         socketio.emit('update_online_count', {'count': count})
@@ -170,9 +109,8 @@ def format_file_size(size_bytes):
 
 # --- Rutas de Descarga ---
 @app.route('/')
-def health_check(): return jsonify({"status": "v17.5 ONLINE (Sockets Activos)", "db": db_status}), 200
+def health_check(): return jsonify({"status": "v17.6 ONLINE (Sockets Activos)", "db": db_status}), 200
 
-# (El resto de tus rutas de descarga, sockets, auth, admin, etc. son idénticas)
 @app.route('/uploads/<path:filename>')
 def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
 @app.route('/logs_historical/<path:filename>')
