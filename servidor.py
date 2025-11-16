@@ -1,4 +1,4 @@
-# --- servidor.py --- (v17.2 - CORRECCIÓN DE ARRANQUE DE GUNICORN)
+# --- servidor.py --- (v17.3 - CORRECCIÓN DE ARRANQUE DE GUNICORN)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -14,8 +14,7 @@ from urllib.parse import urlparse, urlunparse
 from sqlalchemy import text 
 
 app = Flask(__name__)
-# EL PRINT AHORA ESTÁ DESPUÉS DE 'app', ANTES DE CUALQUIER LÓGICA
-print(">>> INICIANDO SERVIDOR MAESTRO (v17.2 - Arranque Estable) <<<")
+print(">>> INICIANDO SERVIDOR MAESTRO (v17.3 - Arranque Estable) <<<")
 
 # --- Configuración de Sockets ---
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
@@ -59,6 +58,7 @@ db = SQLAlchemy() # <-- 1. INICIALIZA VACÍO
 try:
     raw_url = os.environ.get('NEON_URL')
     if not raw_url:
+        print("ADVERTENCIA: NEON_URL no encontrada. Usando SQLite temporal.")
         app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
         db_status = "SQLite (TEMPORAL)"
     else:
@@ -69,11 +69,14 @@ try:
             clean_url += "?sslmode=require"
         app.config['SQLALCHEMY_DATABASE_URI'] = clean_url # <-- 2. CONFIGURA LA APP
         db_status = "Neon PostgreSQL (REAL)"
+        
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    
+    db.init_app(app) # <-- 3. CONECTA LA DB A LA APP (DENTRO DEL TRY)
+    
 except Exception as e:
-    print(f"!!! ERROR CRÍTICO DB: {e}")
-
-db.init_app(app) # <-- 3. CONECTA LA DB A LA APP
+    print(f"!!! ERROR CRÍTICO AL INICIALIZAR DB: {e}")
+    db_status = f"Error: {e}"
 # --- FIN DE LA CORRECCIÓN ---
 
 # --- Modelos ---
@@ -165,7 +168,7 @@ def format_file_size(size_bytes):
 
 # --- Rutas de Descarga ---
 @app.route('/')
-def health_check(): return jsonify({"status": "v17.2 ONLINE (Sockets Activos)", "db": db_status}), 200
+def health_check(): return jsonify({"status": "v17.3 ONLINE (Sockets Activos)", "db": db_status}), 200
 
 # (El resto de tus rutas de descarga, sockets, auth, admin, etc. son idénticas)
 @app.route('/uploads/<path:filename>')
