@@ -1,4 +1,4 @@
-# --- servidor.py --- (v17.3 - CORRECCIÓN DE ARRANQUE DE GUNICORN)
+# --- servidor.py --- (v17.2 - CORRECCIÓN DE ARRANQUE DE GUNICORN)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -14,7 +14,8 @@ from urllib.parse import urlparse, urlunparse
 from sqlalchemy import text 
 
 app = Flask(__name__)
-print(">>> INICIANDO SERVIDOR MAESTRO (v17.3 - Arranque Estable) <<<")
+# EL PRINT AHORA ESTÁ DESPUÉS DE 'app', ANTES DE CUALQUIER LÓGICA
+print(">>> INICIANDO SERVIDOR MAESTRO (v17.2 - Arranque Estable) <<<")
 
 # --- Configuración de Sockets ---
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
@@ -164,8 +165,9 @@ def format_file_size(size_bytes):
 
 # --- Rutas de Descarga ---
 @app.route('/')
-def health_check(): return jsonify({"status": "v17.3 ONLINE (Sockets Activos)", "db": db_status}), 200
+def health_check(): return jsonify({"status": "v17.2 ONLINE (Sockets Activos)", "db": db_status}), 200
 
+# (El resto de tus rutas de descarga, sockets, auth, admin, etc. son idénticas)
 @app.route('/uploads/<path:filename>')
 def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
 @app.route('/logs_historical/<path:filename>')
