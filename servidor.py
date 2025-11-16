@@ -16,16 +16,10 @@ from sqlalchemy import text
 app = Flask(__name__)
 print(">>> INICIANDO SERVIDOR MAESTRO (v17.4 - Arranque Estable) <<<")
 
-# --- Configuración de Sockets ---
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
-socketio = SocketIO(app, cors_allowed_origins="*")
-bcrypt = Bcrypt(app)
-ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
-
-# --- DB Setup (CORREGIDO OTRA VEZ) ---
+# --- 1. CONFIGURACIÓN DE APP (ANTES DE INICIALIZAR DB) ---
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db_status = "Desconocido"
 try:
-    # 1. Configurar la App PRIMERO
     raw_url = os.environ.get('NEON_URL')
     if not raw_url:
         print("ADVERTENCIA: NEON_URL no encontrada. Usando SQLite temporal.")
@@ -37,50 +31,21 @@ try:
         clean_url = urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).strip("'").strip()
         if 'postgresql' in clean_url and 'sslmode' not in clean_url:
             clean_url += "?sslmode=require"
-        app.config['SQLALCHEMY_DATABASE_URI'] = clean_url
+        app.config['SQLALCHEMY_DATABASE_URI'] = clean_url # <-- CONFIGURA LA APP
         db_status = "Neon PostgreSQL (REAL)"
-        
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    
-    # 2. Inicializar la DB DESPUÉS de que la config esté lista
-    db = SQLAlchemy(app)
-    
 except Exception as e:
-    print(f"!!! ERROR CRÍTICO AL INICIALIZAR DB: {e}")
+    print(f"!!! ERROR CRÍTICO AL CONFIGURAR DB: {e}")
     db_status = f"Error: {e}"
-    db = None # Si falla, Gunicorn debe saberlo
-# --- FIN DE LA CORRECCIÓN ---
 
-# --- Memoria RAM (Usuarios Online) ---
-ONLINE_USERS = {} 
+# --- 2. INICIALIZACIÓN DE EXTENSIONES (DESPUÉS DE CONFIGURAR APP) ---
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+socketio = SocketIO(app, cors_allowed_origins="*")
+bcrypt = Bcrypt(app)
+db = SQLAlchemy(app) # <-- Se inicializa aquí, con la app ya configurada
 
-def emit_online_count():
-    """ Emite el recuento actual de usuarios a TODOS los clientes conectados. """
-    try:
-        count = len(ONLINE_USERS)
-        socketio.emit('update_online_count', {'count': count})
-        print(f"EMITIENDO CONTEO: {count} usuarios")
-    except Exception as e:
-        print(f"Error al emitir conteo: {e}")
+ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
 
-# --- Directorios Universales ---
-BASE_DIR = os.getcwd()
-UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
-LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')
-UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates')
-INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')
-DOCS_FOLDER = os.path.join(BASE_DIR, 'documentos_gestion')
-BIBLIOTECA_PUBLIC_FOLDER = os.path.join(BASE_DIR, 'biblioteca_publica') 
-
-for folder in [UPLOAD_FOLDER, LOGS_FOLDER, UPDATES_FOLDER, INCIDENTS_FOLDER, DOCS_FOLDER, BIBLIOTECA_PUBLIC_FOLDER]:
-    os.makedirs(folder, exist_ok=True)
-
-SUB_DOC_FOLDERS = ['desarrollo', 'gestion', 'operaciones']
-for sub in SUB_DOC_FOLDERS:
-    os.makedirs(os.path.join(DOCS_FOLDER, sub), exist_ok=True)
-
-
-# --- Modelos ---
+# --- 3. DEFINICIÓN DE MODELOS (AHORA 'db.Model' EXISTE) ---
 class User(db.Model):
     __tablename__ = 'user'
     id = db.Column(db.Integer, primary_key=True)
@@ -142,6 +107,34 @@ class DocGestion(db.Model):
     storage_path = db.Column(db.String(500), nullable=True)
     size = db.Column(db.Integer)
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+
+# --- Memoria RAM (Usuarios Online) ---
+ONLINE_USERS = {} 
+
+def emit_online_count():
+    """ Emite el recuento actual de usuarios a TODOS los clientes conectados. """
+    try:
+        count = len(ONLINE_USERS)
+        socketio.emit('update_online_count', {'count': count})
+        print(f"EMITIENDO CONTEO: {count} usuarios")
+    except Exception as e:
+        print(f"Error al emitir conteo: {e}")
+
+# --- Directorios Universales ---
+BASE_DIR = os.getcwd()
+UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
+LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')
+UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates')
+INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')
+DOCS_FOLDER = os.path.join(BASE_DIR, 'documentos_gestion')
+BIBLIOTECA_PUBLIC_FOLDER = os.path.join(BASE_DIR, 'biblioteca_publica') 
+
+for folder in [UPLOAD_FOLDER, LOGS_FOLDER, UPDATES_FOLDER, INCIDENTS_FOLDER, DOCS_FOLDER, BIBLIOTECA_PUBLIC_FOLDER]:
+    os.makedirs(folder, exist_ok=True)
+
+SUB_DOC_FOLDERS = ['desarrollo', 'gestion', 'operaciones']
+for sub in SUB_DOC_FOLDERS:
+    os.makedirs(os.path.join(DOCS_FOLDER, sub), exist_ok=True)
 
 # Ruta para crear tablas (opcional, si es necesario)
 @app.route('/admin/create_tables', methods=['GET'])
