@@ -1,9 +1,9 @@
 Flask
 Flask-CORS
-Flask-SocketIO   
-Flask-SQLAlchemy  
-Flask-Bcrypt     
+Flask-SocketIO    # <-- Esta es la que falta y causa el error
+Flask-SQLAlchemy  # <-- Para la base de datos (User, UserFile)
+Flask-Bcrypt      # <-- Para las contraseñas
 werkzeug
 gunicorn
-psycopg2-binary   
+psycopg2-binary   # <-- Para la base de datos Neon (PostgreSQL)
 requests
