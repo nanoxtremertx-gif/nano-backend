@@ -1,4 +1,4 @@
-# --- servidor.py --- (v17.5 - CORRECCIÓN DEL PARSEO DE NEON_URL)
+# --- servidor.py --- (v17.5 - CORRECCIÓN DE FALLBACK DE DB)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -22,23 +22,28 @@ db_status = "Desconocido"
 try:
     raw_url = os.environ.get('NEON_URL')
     if not raw_url:
-        print("ADVERTENCIA: NEON_URL no encontrada. Usando SQLite temporal.")
-        app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
-        db_status = "SQLite (TEMPORAL)"
-    else:
-        # --- ¡¡ESTAS LÍNEAS FALTABAN!! ---
-        parsed = urlparse(raw_url)
-        scheme = 'postgresql' if parsed.scheme == 'postgres' else parsed.scheme
-        clean_url = urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).strip("'").strip()
-        if 'postgresql' in clean_url and 'sslmode' not in clean_url:
-            clean_url += "?sslmode=require"
-        # --- FIN DE LA CORRECCIÓN ---
-            
-        app.config['SQLALCHEMY_DATABASE_URI'] = clean_url # <-- Ahora 'clean_url' existe
-        db_status = "Neon PostgreSQL (REAL)"
+        # Si no hay URL, forzamos un error para saltar al 'except'
+        raise ValueError("NEON_URL no encontrada.")
+    
+    parsed = urlparse(raw_url)
+    scheme = 'postgresql' if parsed.scheme == 'postgres' else parsed.scheme
+    clean_url = urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).strip("'").strip()
+    if 'postgresql' in clean_url and 'sslmode' not in clean_url:
+        clean_url += "?sslmode=require"
+    
+    app.config['SQLALCHEMY_DATABASE_URI'] = clean_url # <-- CONFIGURA LA APP
+    db_status = "Neon PostgreSQL (REAL)"
+    print(f"Base de datos configurada: {db_status}")
+
 except Exception as e:
+    # --- ¡¡AQUÍ ESTÁ LA CORRECCIÓN!! ---
+    # Si 'try' falla (ej. NEON_URL no existe), usamos SQLite como fallback.
     print(f"!!! ERROR CRÍTICO AL CONFIGURAR DB: {e}")
-    db_status = f"Error: {e}"
+    print("!!! USANDO SQLITE COMO FALLBACK.")
+    app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
+    db_status = "SQLite (FALLBACK)"
+# --- FIN DE LA CORRECCIÓN ---
+
 
 # --- 2. INICIALIZACIÓN DE EXTENSIONES (DESPUÉS DE CONFIGURAR APP) ---
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
