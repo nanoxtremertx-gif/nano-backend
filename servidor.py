@@ -434,40 +434,129 @@ def inspect_crs_author():
 # =========================================================
 @app.route('/api/documentos/<section>', methods=['GET'])
 def get_gestion_docs(section):
-# ... (código existente)
-    pass
+# ... (código existente copiado de tu archivo)
+    if section not in SUB_DOC_FOLDERS: return jsonify({"msg": "Sección inválida"}), 400
+    try:
+        docs = DocGestion.query.filter_by(section=section).all()
+        return jsonify([{
+            "id": d.id, "name": d.name, "size": d.size, "date": d.created_at.isoformat(),
+            "url": get_file_url(os.path.join(section, d.storage_path), 'documentos_gestion')
+        } for d in docs]), 200
+    except: return jsonify([]), 200
+
 @app.route('/api/documentos/upload', methods=['POST'])
 def upload_gestion_doc():
-# ... (código existente)
-    pass
+    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
+    try:
+        if 'file' not in request.files or 'section' not in request.form: return jsonify({"message": "Faltan datos"}), 400
+        file = request.files['file']; section = request.form['section']
+        if section not in SUB_DOC_FOLDERS: return jsonify({"message": "Sección inválida"}), 400
+        filename = secure_filename(file.filename)
+        storage_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+        save_path = os.path.join(DOCS_FOLDER, section, storage_name)
+        file.save(save_path)
+        file_size = os.path.getsize(save_path)
+        new_doc = DocGestion(name=filename, section=section, size=file_size, storage_path=storage_name)
+        db.session.add(new_doc); db.session.commit()
+        return jsonify({"message": "Documento subido"}), 201
+    except Exception as e: return jsonify({"message": f"Error: {str(e)}"}), 500
 # =========================================================
 # --- CONSOLAS (Sin Cambios) ---
 # =========================================================
 @app.route('/api/logs/historical', methods=['POST', 'GET'])
 def logs(): 
-# ... (código existente)
-    pass
+    if request.method == 'GET':
+        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
+        try:
+            logs = HistoricalLog.query.order_by(HistoricalLog.date.desc()).limit(100).all()
+            return jsonify([{
+                "id": log.id, "user": log.user, "ip": log.ip, "quality": log.quality,
+                "url": get_file_url(log.storage_path, 'logs_historical') if log.storage_path else None, 
+                "date": log.date.isoformat()
+            } for log in logs]), 200
+        except Exception as e: return jsonify({"error": str(e)}), 500
+
+    if request.method == 'POST':
+        user = request.headers.get('X-Username'); ip = request.headers.get('X-IP'); quality = request.headers.get('X-Quality')
+        if not user or not ip or not quality: return jsonify({"message": "Faltan datos"}), 400
+        
+        filename_ref = f"LOG_{user}_{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')}.log"
+        save_path = os.path.join(LOGS_FOLDER, filename_ref)
+        
+        try:
+            with open(save_path, 'wb') as f: f.write(request.data)
+            new_log = HistoricalLog(user=user, ip=ip, quality=quality, filename=filename_ref, storage_path=filename_ref, date=datetime.datetime.utcnow())
+            db.session.add(new_log); db.session.commit()
+            return jsonify({"status": "Log registrado", "filename": filename_ref}), 201
+        except Exception as e: return jsonify({"status": f"Error DB: {str(e)}"}), 500
+
 @app.route('/api/logs/incident', methods=['POST'])
 def inc(): 
-# ... (código existente)
-    pass
+    try:
+        user = request.form.get('X-Username', request.headers.get('X-Username')); ip = request.form.get('X-IP', request.headers.get('X-IP')); message = request.form.get('message', 'Sin mensaje')
+        if not user or not ip: return jsonify({"message": "Faltan datos de cabecera"}), 400
+        file = request.files.get('log_file'); storage_name = None; filename = "N/A"
+        if file:
+            filename = secure_filename(file.filename)
+            storage_name = f"INCIDENT_{user}_{uuid.uuid4().hex[:8]}_{filename}"
+            save_path = os.path.join(INCIDENTS_FOLDER, storage_name)
+            file.save(save_path)
+        new_incident = IncidentReport(user=user, ip=ip, message=message, filename=filename, storage_path=storage_name, date=datetime.datetime.utcnow())
+        db.session.add(new_incident); db.session.commit()
+        return jsonify({"status":"Reporte de incidente recibido"}), 201
+    except Exception as e: return jsonify({"status": f"Error al procesar incidente: {str(e)}"}), 500
+
 @app.route('/api/logs/incidents', methods=['GET'])
 def incs(): 
-# ... (código existente)
-    pass
+    if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
+    try:
+        reports = IncidentReport.query.order_by(IncidentReport.date.desc()).limit(100).all()
+        return jsonify([{
+            "id": r.id, "user": r.user, "ip": r.ip, "message": r.message,
+            "url": get_file_url(r.storage_path, 'logs_incidents') if r.storage_path else None,
+            "logFile": r.filename, "date": r.date.isoformat()
+        } for r in reports]), 200
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
 @app.route('/api/updates/upload', methods=['POST'])
 def upload_update_file_route():
-# ... (código existente)
-    pass
+    try:
+        filename = request.headers.get('X-Vercel-Filename')
+        if not filename: return jsonify({"message": "Falta X-Vercel-Filename"}), 400
+        filename = secure_filename(filename)
+        version_str = "".join(filter(str.isdigit, filename)) or "0"
+        save_path = os.path.join(UPDATES_FOLDER, filename)
+        with open(save_path, 'wb') as f: f.write(request.data)
+        file_size = os.path.getsize(save_path)
+        existing = UpdateFile.query.filter_by(filename=filename).first()
+        if existing: db.session.delete(existing); db.session.commit()
+        new_update = UpdateFile(filename=filename, version=version_str, size=file_size, storage_path=filename)
+        db.session.add(new_update); db.session.commit()
+        return jsonify({"message": "Actualización subida"}), 201
+    except Exception as e: return jsonify({"message": f"Error: {str(e)}"}), 500
+
 @app.route('/api/updates/list', methods=['GET'])
 def list_update_files():
-# ... (código existente)
-    pass
+    try:
+        updates = UpdateFile.query.order_by(UpdateFile.date.desc()).all()
+        return jsonify([{
+            "id": u.id, "name": u.filename, "version": u.version,
+            "size": u.size, "date": u.date.isoformat()
+        } for u in updates]), 200
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
 @app.route('/api/updates/check', methods=['GET'])
 def chk():
-# ... (código existente)
-    pass
-# ... (Fin de las rutas) ...
+    try:
+        latest_update = UpdateFile.query.order_by(UpdateFile.date.desc()).first()
+        if not latest_update: return jsonify({"message":"No updates"}), 404
+        return jsonify({
+            "version": latest_update.version,
+            "file_name": latest_update.filename,
+            "download_url": get_file_url(latest_update.storage_path, 'updates'),
+            "date": latest_update.date.isoformat()
+        }), 200
+    except Exception as e: return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__': 
     app.run(host='0.0.0.0', port=7860)
