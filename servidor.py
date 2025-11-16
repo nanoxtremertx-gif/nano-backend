@@ -1,5 +1,6 @@
-# --- servidor.py --- (v15.2 - CORRECCIÓN FINAL DE verificationStatus)
+# --- servidor.py --- (v16.0 - FINAL con Socket.IO y API de Biblioteca)
 from flask import Flask, jsonify, request, send_from_directory
+from flask_socketio import SocketIO, emit  # <-- 1. AÑADIDO
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
@@ -13,14 +14,32 @@ from urllib.parse import urlparse, urlunparse
 from sqlalchemy import text 
 
 app = Flask(__name__)
-print(">>> INICIANDO SERVIDOR MAESTRO (v15.2 - Arranque Estable) <<<")
+print(">>> INICIANDO SERVIDOR MAESTRO (v16.0 - Arranque con Sockets) <<<")
 
+# --- 2. MODIFICADO ---
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+socketio = SocketIO(app, cors_allowed_origins="*") # Inicializa Socket.IO
 bcrypt = Bcrypt(app)
+# --- FIN MODIFICADO ---
+
 ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
 
 # --- 🧠 MEMORIA RAM (Usuarios Online) ---
 ONLINE_USERS = {} 
+
+# --- 3. AÑADIDA NUEVA FUNCIÓN ---
+def emit_online_count():
+    """
+    Emite el recuento actual de usuarios a TODOS los clientes conectados.
+    """
+    try:
+        count = len(ONLINE_USERS)
+        # Emite un evento 'update_online_count' con el dato
+        socketio.emit('update_online_count', {'count': count})
+        print(f"EMITIENDO CONTEO: {count} usuarios")
+    except Exception as e:
+        print(f"Error al emitir conteo: {e}")
+# --- FIN DE NUEVA FUNCIÓN ---
 
 # --- 📂 DIRECTORIOS UNIVERSALES ---
 BASE_DIR = os.getcwd()
@@ -40,6 +59,7 @@ for sub in SUB_DOC_FOLDERS:
 
 
 # --- DB SETUP ---
+# (Tu setup de DB es correcto, no se cambia)
 db_status = "Desconocido"
 try:
     raw_url = os.environ.get('NEON_URL')
@@ -61,6 +81,7 @@ except Exception as e:
     db = None
 
 # --- MODELOS ---
+# (Tus modelos son correctos, no se cambian)
 class User(db.Model):
     __tablename__ = 'user'
     id = db.Column(db.Integer, primary_key=True)
@@ -87,9 +108,7 @@ class UserFile(db.Model):
     description = db.Column(db.Text, nullable=True)
     tags = db.Column(db.String(500), nullable=True)
     price = db.Column(db.Float, default=0.0)
-    
-    # --- ¡¡AÑADIDO!! (CAMBIO 1 de 3) ---
-    # Esta columna faltaba en tu versión anterior.
+    # Esta columna es vital, (ya la tenías, lo cual es perfecto)
     verification_status = db.Column(db.String(20), nullable=True, default='N/A') 
 
 class HistoricalLog(db.Model):
@@ -126,11 +145,11 @@ class DocGestion(db.Model):
     size = db.Column(db.Integer)
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
-
 with app.app_context():
     if db: db.create_all()
 
 # --- ÚTILES ---
+# (Tus funciones 'get_file_url' y 'format_file_size' son correctas)
 def get_file_url(filename, folder_route='uploads'):
     if not filename: return None
     return f"{request.host_url}{folder_route}/{filename}"
@@ -147,9 +166,8 @@ def format_file_size(size_bytes):
 
 # --- RUTAS DE DESCARGA ---
 @app.route('/')
-def health_check(): return jsonify({"status": "v15.2 ONLINE (Arranque Estable)", "db": db_status}), 200
-
-# ... (todas las otras rutas de descarga, auth, admin, etc. van aquí sin cambios) ...
+def health_check(): return jsonify({"status": "v16.0 ONLINE (Sockets Activos)", "db": db_status}), 200
+# (Tus rutas de descarga son correctas)
 @app.route('/uploads/<path:filename>')
 def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
 @app.route('/logs_historical/<path:filename>')
@@ -166,8 +184,28 @@ def download_doc_gestion(section, filename):
 def download_biblioteca_file(filename): 
     return send_from_directory(BIBLIOTECA_PUBLIC_FOLDER, filename)
 
+# --- 4. AÑADIDOS MANEJADORES DE SOCKET.IO ---
+@socketio.on('connect')
+def handle_connect():
+    """
+    Se activa cuando un nuevo cliente (navegador) abre la conexión.
+    """
+    print(f"Cliente conectado: {request.sid}")
+    # Envia el conteo actual solo a este nuevo cliente
+    emit('update_online_count', {'count': len(ONLINE_USERS)})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """
+    Se activa cuando un cliente (navegador) cierra la conexión.
+    """
+    print(f"Cliente desconectado: {request.sid}")
+# --- FIN DE MANEJADORES ---
+
+# --- RUTAS DE AUTENTICACIÓN ---
 @app.route('/api/register', methods=['POST'])
 def register():
+    # (Tu lógica es correcta, solo se añade el 'emit')
     d = request.get_json()
     if User.query.filter_by(username=d.get('username')).first(): return jsonify({"message": "Usuario ocupado"}), 409
     if User.query.filter_by(email=d.get('email')).first(): return jsonify({"message": "Email ocupado"}), 409
@@ -177,26 +215,31 @@ def register():
         db.session.add(UserFile(owner_username=d.get('username'), name="Archivos de Usuario", type='folder', parent_id=None, size_bytes=0))
         db.session.commit()
         ONLINE_USERS[d.get('username')] = datetime.datetime.utcnow()
+        emit_online_count() # <-- 5. AVISAR A TODOS
         return jsonify({"message": "Registrado"}), 201
     except Exception as e: db.session.rollback(); return jsonify({"message": str(e)}), 500
 
 @app.route('/api/login', methods=['POST'])
 def login():
+    # (Tu lógica es correcta, solo se añade el 'emit')
     d = request.get_json()
     u = User.query.filter_by(username=d.get('username')).first()
     if u and bcrypt.check_password_hash(u.hash, d.get('password')):
         ONLINE_USERS[u.username] = datetime.datetime.utcnow()
+        emit_online_count() # <-- 5. AVISAR A TODOS
         return jsonify({"message": "OK", "user": {"username": u.username, "email": u.email, "role": u.role, "identificador": u.identificador, "isAdmin": u.role == 'admin'}}), 200
     return jsonify({"message": "Credenciales inválidas"}), 401
 
 @app.route('/api/heartbeat', methods=['POST'])
 def heartbeat():
+    # (Tu lógica es correcta)
     d = request.get_json(); username = d.get('username')
     if username: ONLINE_USERS[username] = datetime.datetime.utcnow(); return jsonify({"status": "alive"}), 200
     return jsonify({"msg": "No user"}), 400
 
 @app.route('/api/logout-signal', methods=['POST'])
 def logout_signal():
+    # (Tu lógica es correcta, solo se añade el 'emit')
     username = None
     try:
         d = request.get_json(silent=True)
@@ -205,19 +248,27 @@ def logout_signal():
     except: pass
     if username and username in ONLINE_USERS:
         del ONLINE_USERS[username]
+        emit_online_count() # <-- 5. AVISAR A TODOS
         return jsonify({"status": "disconnected"}), 200
     return jsonify({"status": "ignored"}), 200
 
 @app.route('/api/online-users', methods=['GET'])
 def get_online_users():
+    # (Tu lógica es correcta, solo se añade el 'emit' si alguien expira)
     now = datetime.datetime.utcnow(); limit = now - timedelta(seconds=45)
     active_list = []; users_to_remove = []
     for user, last_time in ONLINE_USERS.items():
         if last_time > limit: active_list.append({"username": user, "last_seen": last_time.isoformat()})
         else: users_to_remove.append(user)
-    for u in users_to_remove: del ONLINE_USERS[u]
+    
+    if len(users_to_remove) > 0:
+        for u in users_to_remove: del ONLINE_USERS[u]
+        emit_online_count() # <-- 5. AVISAR A TODOS
+        
     return jsonify({"count": len(active_list), "users": active_list}), 200
 
+# --- RUTAS DE ADMIN ---
+# (Tus rutas de admin son correctas, no se cambian)
 @app.route('/api/admin/users', methods=['GET'])
 def admin_list():
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
@@ -225,7 +276,7 @@ def admin_list():
         users = User.query.all()
         return jsonify([{"username": u.username, "email": u.email, "role": u.role, "identificador": u.identificador, "subscriptionEndDate": u.subscription_end} for u in users]), 200
     except Exception as e: return jsonify({"error": str(e)}), 500
-
+# ... (el resto de /api/admin/* es correcto) ...
 @app.route('/api/admin/users/<username>', methods=['PUT'])
 def admin_update(username):
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "No"}), 403
@@ -234,7 +285,6 @@ def admin_update(username):
     if 'role' in d: u.role = d['role']
     if 'subscriptionEndDate' in d: u.subscription_end = d['subscriptionEndDate']
     db.session.commit(); return jsonify({"message": "Actualizado"}), 200
-
 @app.route('/api/admin/users/<username>', methods=['DELETE'])
 def admin_delete(username):
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "No"}), 403
@@ -243,14 +293,17 @@ def admin_delete(username):
     if username in ONLINE_USERS: del ONLINE_USERS[username]
     return jsonify({"message": "Eliminado"}), 200
 
+# --- RUTAS DE ARCHIVOS DE USUARIO ---
 
 @app.route('/api/my-files/<username>', methods=['GET'])
 def get_files(username):
+    """
+    Esta ruta es la que usa 'misarchivos.jsx'.
+    Tu versión v15.2 ya era correcta. Envía todos los datos necesarios.
+    """
     try:
         files = UserFile.query.filter_by(owner_username=username).all()
         
-        # --- ¡¡AÑADIDO!! (CAMBIO 2 de 3) ---
-        # Ahora enviamos todos los datos que 'misarchivos.jsx' necesita
         file_list = []
         for f in files:
             file_list.append({
@@ -259,34 +312,35 @@ def get_files(username):
                 "type": f.type,
                 "parentId": f.parent_id,
                 "size_bytes": f.size_bytes,
-                "size": format_file_size(f.size_bytes), # Usamos la función de formato
+                "size": format_file_size(f.size_bytes), # <- Dato clave para 'misarchivos'
                 "path": get_file_url(f.storage_path, 'uploads'),
                 "isPublished": f.is_published,
-                "date": f.created_at.strftime('%Y-%m-%d'),
-                "verificationStatus": f.verification_status, # <-- ¡EL DATO CLAVE!
+                "date": f.created_at.strftime('%Y-%m-%d'), # <- Dato clave para 'misarchivos'
+                "verificationStatus": f.verification_status, # <- Dato clave para 'misarchivos'
                 "monetization": {"enabled": f.price > 0, "price": f.price},
                 "description": f.description,
                 "tags": f.tags.split(',') if f.tags else []
             })
         return jsonify(file_list), 200
-        # --- FIN DEL CAMBIO ---
-        
     except Exception as e: 
         print(f"Error en get_files: {e}")
         return jsonify([]), 200
 
 @app.route('/api/upload-file', methods=['POST'])
 def upload_user_file():
+    """
+    Esta ruta es la que usa 'subir.jsx'.
+    Tu versión v15.2 ya era correcta. Guarda el verificationStatus
+    y maneja el 'parentId' de forma segura.
+    """
     try:
         if 'file' not in request.files: return jsonify({"message": "Falta archivo"}), 400
         file = request.files['file']
         user_id = request.form.get('userId')
         parent_id = request.form.get('parentId')
         
-        # --- ¡¡AÑADIDO!! (CAMBIO 3 de 3) ---
-        # Leemos el verificationStatus que envía 'subir.jsx'
+        # Lee el verificationStatus que envía 'subir.jsx'
         verification_status = request.form.get('verificationStatus', 'N/A')
-        # --- FIN AÑADIDO ---
 
         user = User.query.filter_by(username=user_id).first()
         if not user: return jsonify({"message": "Usuario inválido"}), 403
@@ -299,13 +353,11 @@ def upload_user_file():
         if parent_id == 'null' or parent_id == 'undefined': 
             parent_id = None
         
-        # Si parent_id es 'root', buscar el ID de la carpeta raíz real
+        # Si parent_id NO es 'root', se usa directamente (ej: "123-abc-456")
+        # Si es 'root', busca el ID de la carpeta raíz real (esto es por si 'subir.jsx' falla)
         if parent_id == 'root':
             root_folder = UserFile.query.filter_by(owner_username=user_id, parent_id=None, name="Archivos de Usuario").first()
-            if root_folder:
-                parent_id = root_folder.id
-            else:
-                parent_id = None # Falla de seguridad
+            parent_id = root_folder.id if root_folder else None
 
         new_file = UserFile(
             owner_username=user_id, 
@@ -314,13 +366,12 @@ def upload_user_file():
             parent_id=parent_id, 
             size_bytes=file_size, 
             storage_path=unique_name,
-            # --- ¡¡AÑADIDO!! ---
-            verification_status=verification_status # Lo guardamos en la DB
+            verification_status=verification_status # <- Se guarda en la DB
         )
         
         db.session.add(new_file); db.session.commit()
         
-        # Devolvemos el objeto completo para que 'misarchivos' lo pueda añadir al estado
+        # Devuelve el objeto completo para que 'misarchivos' (si estuviera abierto) lo pueda añadir
         return jsonify({"message": "Subido", "newFile": {
             "id": new_file.id, 
             "name": new_file.name, 
@@ -343,16 +394,22 @@ def upload_user_file():
 
 @app.route('/api/create-folder', methods=['POST'])
 def create_folder():
+    """
+    Esta ruta es la que usa 'misarchivos.jsx' y 'subir.jsx'.
+    Tu versión v15.2 ya era correcta.
+    """
     try:
         d = request.get_json()
         parent_id = d.get('parentId')
-        if parent_id == 'root': # Manejar el caso 'root'
+        
+        # Maneja el caso 'root' (por si acaso)
+        if parent_id == 'root' or not parent_id: 
             root_folder = UserFile.query.filter_by(owner_username=d.get('userId'), parent_id=None, name="Archivos de Usuario").first()
             parent_id = root_folder.id if root_folder else None
 
         nf = UserFile(owner_username=d.get('userId'), name=d.get('name'), type='folder', parent_id=parent_id, size_bytes=0)
         db.session.add(nf); db.session.commit()
-        # Devolvemos el objeto completo
+        # Devolvemos el objeto completo para que el frontend lo añada al estado
         return jsonify({"newFolder": {
             "id": nf.id, "name": nf.name, "type": "folder", "parentId": nf.parent_id, 
             "date": nf.created_at.strftime('%Y-%m-%d'), 
@@ -362,6 +419,7 @@ def create_folder():
 
 @app.route('/api/delete-file', methods=['DELETE'])
 def delete_f():
+    # (Tu lógica es correcta)
     try: 
         d = request.get_json()
         f = UserFile.query.get(d.get('fileId'))
@@ -383,13 +441,17 @@ def delete_f():
 
 @app.route('/api/update-file', methods=['POST'])
 def upd_file():
+    """
+    Esta ruta es la que usa 'misarchivos.jsx' para publicar.
+    Tu versión v15.2 ya era correcta.
+    """
     try: 
         d = request.get_json()
         f = UserFile.query.get(d.get('fileId'))
         if f: 
             u = d.get('updates', {})
             if 'name' in u: f.name = u['name']
-            if 'isPublished' in u: f.is_published = u['isPublished']
+            if 'isPublished' in u: f.is_published = u['isPublished'] # <- Esto mueve el archivo a la biblioteca
             if 'description' in u: f.description = u['description']
             if 'tags' in u: f.tags = ",".join(u['tags'])
             if 'monetization' in u:
@@ -397,6 +459,7 @@ def upd_file():
 
             db.session.commit()
             
+            # Devuelve el objeto actualizado
             return jsonify({"updatedFile": {
                 "id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id, 
                 "size_bytes": f.size_bytes, 
@@ -416,6 +479,7 @@ def upd_file():
 
 @app.route('/get-crs-author', methods=['POST'])
 def inspect_crs_author():
+    # (Tu lógica es correcta)
     try:
         file = request.files['file']; temp_path = os.path.join(UPLOAD_FOLDER, f"temp_{uuid.uuid4().hex}.crs"); file.save(temp_path)
         author_id = "N/A"
@@ -429,11 +493,11 @@ def inspect_crs_author():
     except: return jsonify({"error": "Error"}), 500
 
 # =========================================================
-# --- GESTIÓN DE DOCUMENTOS UNIVERSALES (Sin Cambios) ---
+# --- GESTIÓN DE DOCUMENTOS UNIVERSALES ---
+# (Tus rutas de /api/documentos/* son correctas)
 # =========================================================
 @app.route('/api/documentos/<section>', methods=['GET'])
 def get_gestion_docs(section):
-# ... (código existente copiado de tu archivo)
     if section not in SUB_DOC_FOLDERS: return jsonify({"msg": "Sección inválida"}), 400
     try:
         docs = DocGestion.query.filter_by(section=section).all()
@@ -442,10 +506,9 @@ def get_gestion_docs(section):
             "url": get_file_url(os.path.join(section, d.storage_path), 'documentos_gestion')
         } for d in docs]), 200
     except: return jsonify([]), 200
-
+# ... (el resto de /api/documentos/* es correcto) ...
 @app.route('/api/documentos/upload', methods=['POST'])
 def upload_gestion_doc():
-# ... (código existente copiado de tu archivo)
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
     try:
         if 'file' not in request.files or 'section' not in request.form: return jsonify({"message": "Faltan datos"}), 400
@@ -460,12 +523,13 @@ def upload_gestion_doc():
         db.session.add(new_doc); db.session.commit()
         return jsonify({"message": "Documento subido"}), 201
     except Exception as e: return jsonify({"message": f"Error: {str(e)}"}), 500
+
 # =========================================================
-# --- CONSOLAS (Sin Cambios) ---
+# --- CONSOLAS ---
+# (Tus rutas de /api/logs/* y /api/updates/* son correctas)
 # =========================================================
 @app.route('/api/logs/historical', methods=['POST', 'GET'])
 def logs(): 
-# ... (código existente copiado de tu archivo)
     if request.method == 'GET':
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         try:
@@ -476,6 +540,7 @@ def logs():
                 "date": log.date.isoformat()
             } for log in logs]), 200
         except Exception as e: return jsonify({"error": str(e)}), 500
+    # ... (el resto de tus rutas de logs y updates es correcto) ...
     if request.method == 'POST':
         user = request.headers.get('X-Username'); ip = request.headers.get('X-IP'); quality = request.headers.get('X-Quality')
         if not user or not ip or not quality: return jsonify({"message": "Faltan datos"}), 400
@@ -489,7 +554,6 @@ def logs():
         except Exception as e: return jsonify({"status": f"Error DB: {str(e)}"}), 500
 @app.route('/api/logs/incident', methods=['POST'])
 def inc(): 
-# ... (código existente copiado de tu archivo)
     try:
         user = request.form.get('X-Username', request.headers.get('X-Username')); ip = request.form.get('X-IP', request.headers.get('X-IP')); message = request.form.get('message', 'Sin mensaje')
         if not user or not ip: return jsonify({"message": "Faltan datos de cabecera"}), 400
@@ -505,7 +569,6 @@ def inc():
     except Exception as e: return jsonify({"status": f"Error al procesar incidente: {str(e)}"}), 500
 @app.route('/api/logs/incidents', methods=['GET'])
 def incs(): 
-# ... (código existente copiado de tu archivo)
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
     try:
         reports = IncidentReport.query.order_by(IncidentReport.date.desc()).limit(100).all()
@@ -517,7 +580,6 @@ def incs():
     except Exception as e: return jsonify({"error": str(e)}), 500
 @app.route('/api/updates/upload', methods=['POST'])
 def upload_update_file_route():
-# ... (código existente copiado de tu archivo)
     try:
         filename = request.headers.get('X-Vercel-Filename')
         if not filename: return jsonify({"message": "Falta X-Vercel-Filename"}), 400
@@ -534,7 +596,6 @@ def upload_update_file_route():
     except Exception as e: return jsonify({"message": f"Error: {str(e)}"}), 500
 @app.route('/api/updates/list', methods=['GET'])
 def list_update_files():
-# ... (código existente copiado de tu archivo)
     try:
         updates = UpdateFile.query.order_by(UpdateFile.date.desc()).all()
         return jsonify([{
@@ -544,7 +605,6 @@ def list_update_files():
     except Exception as e: return jsonify({"error": str(e)}), 500
 @app.route('/api/updates/check', methods=['GET'])
 def chk():
-# ... (código existente copiado de tu archivo)
     try:
         latest_update = UpdateFile.query.order_by(UpdateFile.date.desc()).first()
         if not latest_update: return jsonify({"message":"No updates"}), 404
@@ -555,7 +615,64 @@ def chk():
             "date": latest_update.date.isoformat()
         }), 200
     except Exception as e: return jsonify({"error": str(e)}), 500
-# ... (Fin de las rutas) ...
 
+# =========================================================
+# --- 6. NUEVA API DE BIBLIOTECA PÚBLICA ---
+# =========================================================
+@app.route('/api/biblioteca/public-files', methods=['GET'])
+def get_public_files():
+    """
+    Devuelve todos los archivos que han sido marcados como 'is_published = True'.
+    """
+    try:
+        # Busca todos los archivos donde is_published sea True
+        files = UserFile.query.filter_by(is_published=True).order_by(UserFile.created_at.desc()).all()
+        
+        file_list = []
+        for f in files:
+            # Reutilizamos la misma estructura que /api/my-files para que el frontend (FileCard) la entienda
+            file_list.append({
+                "id": f.id,
+                "name": f.name,
+                "type": f.type,
+                "parentId": f.parent_id,
+                "size_bytes": f.size_bytes,
+                "size": format_file_size(f.size_bytes),
+                "path": get_file_url(f.storage_path, 'uploads'),
+                "isPublished": f.is_published,
+                "date": f.created_at.strftime('%Y-%m-%d'),
+                "verificationStatus": f.verification_status,
+                "monetization": {"enabled": f.price > 0, "price": f.price},
+                "description": f.description,
+                "tags": f.tags.split(',') if f.tags else [],
+                "userId": f.owner_username # ¡Importante para 'biblioteca.jsx'!
+            })
+        return jsonify(file_list), 200
+    except Exception as e: 
+        print(f"Error en get_public_files: {e}")
+        return jsonify([]), 200
+
+@app.route('/api/biblioteca/profiles', methods=['GET'])
+def get_public_profiles():
+    """
+    Devuelve una lista simple de todos los usuarios para el sidebar de 'Top Contribuidores'.
+    """
+    try:
+        users = User.query.all()
+        # Creamos la estructura que espera 'biblioteca.jsx'
+        profile_list = [{
+            "username": u.username.lower(),
+            "displayName": u.username.capitalize(), # 'biblioteca.jsx' espera 'displayName'
+            "avatar": None # Puedes añadir una URL de avatar aquí si la tienes
+        } for u in users]
+        return jsonify(profile_list), 200
+    except Exception as e:
+        print(f"Error en get_public_profiles: {e}")
+        return jsonify([]), 200
+
+# =========================================================
+# --- 7. MODIFICACIÓN FINAL ---
+# =========================================================
 if __name__ == '__main__': 
-    app.run(host='0.0.0.0', port=7860)
+    # Cambia app.run por socketio.run para activar los WebSockets
+    socketio.run(app, host='0.0.0.0', port=7860)
