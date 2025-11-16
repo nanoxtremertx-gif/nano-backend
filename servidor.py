@@ -1,4 +1,4 @@
-# --- servidor.py --- (v17.3 - CORRECCIÓN DE ARRANQUE DE GUNICORN)
+# --- servidor.py --- (v17.4 - CORRECCIÓN DE ORDEN DE INICIALIZACIÓN DE DB)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -14,13 +14,42 @@ from urllib.parse import urlparse, urlunparse
 from sqlalchemy import text 
 
 app = Flask(__name__)
-print(">>> INICIANDO SERVIDOR MAESTRO (v17.3 - Arranque Estable) <<<")
+print(">>> INICIANDO SERVIDOR MAESTRO (v17.4 - Arranque Estable) <<<")
 
 # --- Configuración de Sockets ---
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 socketio = SocketIO(app, cors_allowed_origins="*")
 bcrypt = Bcrypt(app)
 ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
+
+# --- DB Setup (CORREGIDO OTRA VEZ) ---
+db_status = "Desconocido"
+try:
+    # 1. Configurar la App PRIMERO
+    raw_url = os.environ.get('NEON_URL')
+    if not raw_url:
+        print("ADVERTENCIA: NEON_URL no encontrada. Usando SQLite temporal.")
+        app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
+        db_status = "SQLite (TEMPORAL)"
+    else:
+        parsed = urlparse(raw_url)
+        scheme = 'postgresql' if parsed.scheme == 'postgres' else parsed.scheme
+        clean_url = urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).strip("'").strip()
+        if 'postgresql' in clean_url and 'sslmode' not in clean_url:
+            clean_url += "?sslmode=require"
+        app.config['SQLALCHEMY_DATABASE_URI'] = clean_url
+        db_status = "Neon PostgreSQL (REAL)"
+        
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    
+    # 2. Inicializar la DB DESPUÉS de que la config esté lista
+    db = SQLAlchemy(app)
+    
+except Exception as e:
+    print(f"!!! ERROR CRÍTICO AL INICIALIZAR DB: {e}")
+    db_status = f"Error: {e}"
+    db = None # Si falla, Gunicorn debe saberlo
+# --- FIN DE LA CORRECCIÓN ---
 
 # --- Memoria RAM (Usuarios Online) ---
 ONLINE_USERS = {} 
@@ -50,34 +79,6 @@ SUB_DOC_FOLDERS = ['desarrollo', 'gestion', 'operaciones']
 for sub in SUB_DOC_FOLDERS:
     os.makedirs(os.path.join(DOCS_FOLDER, sub), exist_ok=True)
 
-
-# --- DB Setup (CORREGIDO) ---
-db_status = "Desconocido"
-db = SQLAlchemy() # <-- 1. INICIALIZA VACÍO
-
-try:
-    raw_url = os.environ.get('NEON_URL')
-    if not raw_url:
-        print("ADVERTENCIA: NEON_URL no encontrada. Usando SQLite temporal.")
-        app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
-        db_status = "SQLite (TEMPORAL)"
-    else:
-        parsed = urlparse(raw_url)
-        scheme = 'postgresql' if parsed.scheme == 'postgres' else parsed.scheme
-        clean_url = urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).strip("'").strip()
-        if 'postgresql' in clean_url and 'sslmode' not in clean_url:
-            clean_url += "?sslmode=require"
-        app.config['SQLALCHEMY_DATABASE_URI'] = clean_url # <-- 2. CONFIGURA LA APP
-        db_status = "Neon PostgreSQL (REAL)"
-        
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    
-    db.init_app(app) # <-- 3. CONECTA LA DB A LA APP (DENTRO DEL TRY)
-    
-except Exception as e:
-    print(f"!!! ERROR CRÍTICO AL INICIALIZAR DB: {e}")
-    db_status = f"Error: {e}"
-# --- FIN DE LA CORRECCIÓN ---
 
 # --- Modelos ---
 class User(db.Model):
@@ -168,7 +169,7 @@ def format_file_size(size_bytes):
 
 # --- Rutas de Descarga ---
 @app.route('/')
-def health_check(): return jsonify({"status": "v17.3 ONLINE (Sockets Activos)", "db": db_status}), 200
+def health_check(): return jsonify({"status": "v17.4 ONLINE (Sockets Activos)", "db": db_status}), 200
 
 # (El resto de tus rutas de descarga, sockets, auth, admin, etc. son idénticas)
 @app.route('/uploads/<path:filename>')
