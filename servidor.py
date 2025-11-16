@@ -136,6 +136,8 @@ def get_file_url(filename, folder_route='uploads'):
     return f"{request.host_url}{folder_route}/{filename}"
 
 def format_file_size(size_bytes):
+    if size_bytes < 1024:
+        return f"{size_bytes} Bytes"
     if size_bytes < 1048576: # Menos de 1 MB
         return f"{size_bytes / 1024:.1f} KB"
     elif size_bytes < 1073741824: # Menos de 1 GB
@@ -293,6 +295,7 @@ def upload_user_file():
         save_path = os.path.join(UPLOAD_FOLDER, unique_name)
         file.save(save_path); file_size = os.path.getsize(save_path)
         
+        # Corrección para 'null' o 'undefined' como strings
         if parent_id == 'null' or parent_id == 'undefined': 
             parent_id = None
         
@@ -336,6 +339,7 @@ def create_folder():
         d = request.get_json()
         nf = UserFile(owner_username=d.get('userId'), name=d.get('name'), type='folder', parent_id=d.get('parentId'), size_bytes=0)
         db.session.add(nf); db.session.commit()
+        # Devolvemos el objeto completo
         return jsonify({"newFolder": {
             "id": nf.id, "name": nf.name, "type": "folder", "parentId": nf.parent_id, 
             "date": nf.created_at.strftime('%Y-%m-%d'), 
@@ -380,6 +384,7 @@ def upd_file():
 
             db.session.commit()
             
+            # Devolvemos el objeto completo actualizado
             return jsonify({"updatedFile": {
                 "id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id, 
                 "size_bytes": f.size_bytes, 
