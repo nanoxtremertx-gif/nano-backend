@@ -1,4 +1,4 @@
-# --- servidor.py --- (v14.0 - FIX COMPLETO DB/FILESYSTEM + BIBLIOTECA)
+# --- servidor.py --- (v15.0 - FIX COMPLETO DE SINTAXIS Y PRODUCCIÓN)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
@@ -13,7 +13,7 @@ from urllib.parse import urlparse, urlunparse
 from sqlalchemy import text 
 
 app = Flask(__name__)
-print(">>> INICIANDO SERVIDOR MAESTRO (v14.0 - Producción Lista) <<<")
+print(">>> INICIANDO SERVIDOR MAESTRO (v15.0 - Arranque Estable) <<<")
 
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 bcrypt = Bcrypt(app)
@@ -109,7 +109,6 @@ class IncidentReport(db.Model):
 class UpdateFile(db.Model):
     __tablename__ = 'update_file'
     id = db.Column(db.Integer, primary_key=True)
-    # CORRECCIÓN FINAL: Se elimina unique=True para evitar errores 500 al recrear la tabla.
     filename = db.Column(db.String(255)) 
     version = db.Column(db.String(50))
     size = db.Column(db.Integer)
@@ -150,7 +149,7 @@ def fix_database_tables():
 
 # --- RUTAS DE DESCARGA ---
 @app.route('/')
-def health_check(): return jsonify({"status": "v14.0 ONLINE (Producción)", "db": db_status}), 200
+def health_check(): return jsonify({"status": "v15.0 ONLINE (Arranque Estable)", "db": db_status}), 200
 
 @app.route('/uploads/<path:filename>')
 def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
@@ -174,7 +173,7 @@ def download_biblioteca_file(filename):
     return send_from_directory(BIBLIOTECA_PUBLIC_FOLDER, filename)
 
 
-# --- AUTH (Se mantiene igual) ---
+# --- AUTH ---
 @app.route('/api/register', methods=['POST'])
 def register():
     d = request.get_json()
@@ -227,7 +226,7 @@ def get_online_users():
     for u in users_to_remove: del ONLINE_USERS[u]
     return jsonify({"count": len(active_list), "users": active_list}), 200
 
-# --- ADMIN/FILES (Se mantienen igual) ---
+# --- ADMIN/FILES ---
 @app.route('/api/admin/users', methods=['GET'])
 def admin_list():
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
@@ -287,20 +286,33 @@ def create_folder():
 
 @app.route('/api/delete-file', methods=['DELETE'])
 def delete_f():
-    try: d = request.get_json(); f = UserFile.query.get(d.get('fileId'));
-    if f: db.session.delete(f); db.session.commit()
-    return jsonify({"message": "Deleted"}), 200
-    except: return jsonify({"message": "Error"}), 500
+    try: 
+        d = request.get_json()
+        f = UserFile.query.get(d.get('fileId'))
+        if f: 
+            db.session.delete(f)
+            db.session.commit()
+            return jsonify({"message": "Deleted"}), 200
+        return jsonify({"message": "File not found"}), 404
+    except Exception: 
+        db.session.rollback()
+        return jsonify({"message": "Error deleting file"}), 500
 
 @app.route('/api/update-file', methods=['POST'])
 def upd_file():
-    try: d = request.get_json(); f = UserFile.query.get(d.get('fileId'))
-    if f: u = d.get('updates', {});
-    if 'name' in u: f.name = u['name'];
-    if 'isPublished' in u: f.is_published = u['isPublished']
-    db.session.commit(); return jsonify({"updatedFile": {"id": f.id}}), 200
-    return jsonify({"msg": "404"}), 404
-    except: return jsonify({"message": "Error"}), 500
+    try: 
+        d = request.get_json()
+        f = UserFile.query.get(d.get('fileId'))
+        if f: 
+            u = d.get('updates', {})
+            if 'name' in u: f.name = u['name']
+            if 'isPublished' in u: f.is_published = u['isPublished']
+            db.session.commit()
+            return jsonify({"updatedFile": {"id": f.id}}), 200
+        return jsonify({"msg": "404"}), 404
+    except Exception: 
+        db.session.rollback()
+        return jsonify({"message": "Error updating file"}), 500
 
 @app.route('/get-crs-author', methods=['POST'])
 def inspect_crs_author():
