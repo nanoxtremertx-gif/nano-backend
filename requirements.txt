@@ -1,9 +1,9 @@
 Flask
 Flask-CORS
-Flask-SocketIO    # <-- Para el contador de usuarios en tiempo real
-Flask-SQLAlchemy  # <-- Para los modelos de la base de datos (User, UserFile)
-Flask-Bcrypt      # <-- Para encriptar las contraseñas
+Flask-SocketIO    # <-- Esta es la que falta y causa el error
+Flask-SQLAlchemy  # <-- Para la base de datos
+Flask-Bcrypt      # <-- Para las contraseñas
 werkzeug
-gunicorn          # <-- Correcto, para producción
-psycopg2-binary   # <-- El conector para tu base de datos Neon (PostgreSQL)
+gunicorn
+psycopg2-binary   # <-- Para la base de datos Neon (PostgreSQL)
 requests
