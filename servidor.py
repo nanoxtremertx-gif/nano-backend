@@ -299,6 +299,15 @@ def upload_user_file():
         if parent_id == 'null' or parent_id == 'undefined': 
             parent_id = None
         
+        # Si parent_id es 'root', buscar el ID de la carpeta raíz real
+        if parent_id == 'root':
+            root_folder = UserFile.query.filter_by(owner_username=user_id, parent_id=None, name="Archivos de Usuario").first()
+            if root_folder:
+                parent_id = root_folder.id
+            else:
+                # Si no existe (error raro), forzarlo a null
+                parent_id = None
+
         new_file = UserFile(
             owner_username=user_id, 
             name=filename, 
@@ -337,7 +346,12 @@ def upload_user_file():
 def create_folder():
     try:
         d = request.get_json()
-        nf = UserFile(owner_username=d.get('userId'), name=d.get('name'), type='folder', parent_id=d.get('parentId'), size_bytes=0)
+        parent_id = d.get('parentId')
+        if parent_id == 'root': # Manejar el caso 'root'
+            root_folder = UserFile.query.filter_by(owner_username=d.get('userId'), parent_id=None, name="Archivos de Usuario").first()
+            parent_id = root_folder.id if root_folder else None
+
+        nf = UserFile(owner_username=d.get('userId'), name=d.get('name'), type='folder', parent_id=parent_id, size_bytes=0)
         db.session.add(nf); db.session.commit()
         # Devolvemos el objeto completo
         return jsonify({"newFolder": {
@@ -384,7 +398,6 @@ def upd_file():
 
             db.session.commit()
             
-            # Devolvemos el objeto completo actualizado
             return jsonify({"updatedFile": {
                 "id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id, 
                 "size_bytes": f.size_bytes, 
