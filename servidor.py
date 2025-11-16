@@ -89,7 +89,7 @@ class UserFile(db.Model):
     price = db.Column(db.Float, default=0.0)
     
     # --- ¡¡AÑADIDO!! (CAMBIO 1 de 3) ---
-    # Esta columna faltaba en tu versión.
+    # Esta columna faltaba en tu versión anterior.
     verification_status = db.Column(db.String(20), nullable=True, default='N/A') 
 
 class HistoricalLog(db.Model):
