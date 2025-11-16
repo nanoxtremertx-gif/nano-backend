@@ -305,8 +305,7 @@ def upload_user_file():
             if root_folder:
                 parent_id = root_folder.id
             else:
-                # Si no existe (error raro), forzarlo a null
-                parent_id = None
+                parent_id = None # Falla de seguridad
 
         new_file = UserFile(
             owner_username=user_id, 
@@ -446,6 +445,7 @@ def get_gestion_docs(section):
 
 @app.route('/api/documentos/upload', methods=['POST'])
 def upload_gestion_doc():
+# ... (código existente copiado de tu archivo)
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
     try:
         if 'file' not in request.files or 'section' not in request.form: return jsonify({"message": "Faltan datos"}), 400
@@ -465,6 +465,7 @@ def upload_gestion_doc():
 # =========================================================
 @app.route('/api/logs/historical', methods=['POST', 'GET'])
 def logs(): 
+# ... (código existente copiado de tu archivo)
     if request.method == 'GET':
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         try:
@@ -475,23 +476,20 @@ def logs():
                 "date": log.date.isoformat()
             } for log in logs]), 200
         except Exception as e: return jsonify({"error": str(e)}), 500
-
     if request.method == 'POST':
         user = request.headers.get('X-Username'); ip = request.headers.get('X-IP'); quality = request.headers.get('X-Quality')
         if not user or not ip or not quality: return jsonify({"message": "Faltan datos"}), 400
-        
         filename_ref = f"LOG_{user}_{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')}.log"
         save_path = os.path.join(LOGS_FOLDER, filename_ref)
-        
         try:
             with open(save_path, 'wb') as f: f.write(request.data)
             new_log = HistoricalLog(user=user, ip=ip, quality=quality, filename=filename_ref, storage_path=filename_ref, date=datetime.datetime.utcnow())
             db.session.add(new_log); db.session.commit()
             return jsonify({"status": "Log registrado", "filename": filename_ref}), 201
         except Exception as e: return jsonify({"status": f"Error DB: {str(e)}"}), 500
-
 @app.route('/api/logs/incident', methods=['POST'])
 def inc(): 
+# ... (código existente copiado de tu archivo)
     try:
         user = request.form.get('X-Username', request.headers.get('X-Username')); ip = request.form.get('X-IP', request.headers.get('X-IP')); message = request.form.get('message', 'Sin mensaje')
         if not user or not ip: return jsonify({"message": "Faltan datos de cabecera"}), 400
@@ -505,9 +503,9 @@ def inc():
         db.session.add(new_incident); db.session.commit()
         return jsonify({"status":"Reporte de incidente recibido"}), 201
     except Exception as e: return jsonify({"status": f"Error al procesar incidente: {str(e)}"}), 500
-
 @app.route('/api/logs/incidents', methods=['GET'])
 def incs(): 
+# ... (código existente copiado de tu archivo)
     if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
     try:
         reports = IncidentReport.query.order_by(IncidentReport.date.desc()).limit(100).all()
@@ -517,9 +515,9 @@ def incs():
             "logFile": r.filename, "date": r.date.isoformat()
         } for r in reports]), 200
     except Exception as e: return jsonify({"error": str(e)}), 500
-
 @app.route('/api/updates/upload', methods=['POST'])
 def upload_update_file_route():
+# ... (código existente copiado de tu archivo)
     try:
         filename = request.headers.get('X-Vercel-Filename')
         if not filename: return jsonify({"message": "Falta X-Vercel-Filename"}), 400
@@ -534,9 +532,9 @@ def upload_update_file_route():
         db.session.add(new_update); db.session.commit()
         return jsonify({"message": "Actualización subida"}), 201
     except Exception as e: return jsonify({"message": f"Error: {str(e)}"}), 500
-
 @app.route('/api/updates/list', methods=['GET'])
 def list_update_files():
+# ... (código existente copiado de tu archivo)
     try:
         updates = UpdateFile.query.order_by(UpdateFile.date.desc()).all()
         return jsonify([{
@@ -544,9 +542,9 @@ def list_update_files():
             "size": u.size, "date": u.date.isoformat()
         } for u in updates]), 200
     except Exception as e: return jsonify({"error": str(e)}), 500
-
 @app.route('/api/updates/check', methods=['GET'])
 def chk():
+# ... (código existente copiado de tu archivo)
     try:
         latest_update = UpdateFile.query.order_by(UpdateFile.date.desc()).first()
         if not latest_update: return jsonify({"message":"No updates"}), 404
@@ -557,6 +555,7 @@ def chk():
             "date": latest_update.date.isoformat()
         }), 200
     except Exception as e: return jsonify({"error": str(e)}), 500
+# ... (Fin de las rutas) ...
 
 if __name__ == '__main__': 
     app.run(host='0.0.0.0', port=7860)
