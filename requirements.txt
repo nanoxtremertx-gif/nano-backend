@@ -1,5 +1,9 @@
 Flask
 Flask-CORS
+Flask-SocketIO    # <-- Para el contador de usuarios en tiempo real
+Flask-SQLAlchemy  # <-- Para los modelos de la base de datos (User, UserFile)
+Flask-Bcrypt      # <-- Para encriptar las contraseñas
 werkzeug
+gunicorn          # <-- Correcto, para producción
+psycopg2-binary   # <-- El conector para tu base de datos Neon (PostgreSQL)
 requests
-gunicorn  # ¡Asegúrate de que esta línea esté presente!
