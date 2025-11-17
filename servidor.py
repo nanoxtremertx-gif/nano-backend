@@ -1,4 +1,4 @@
-# --- servidor.py --- (v18.0 - Factory Pattern)
+# --- servidor.py --- (v18.2 - Corregido Registro y Login)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -17,7 +17,6 @@ from sqlalchemy import text
 from models import db, User, UserFile, HistoricalLog, IncidentReport, UpdateFile, DocGestion
 
 # --- 2. INICIALIZAR EXTENSIONES (VACÍAS) ---
-# Gunicorn las necesita aquí para que el worker 'eventlet' las detecte
 cors = CORS()
 bcrypt = Bcrypt()
 socketio = SocketIO()
@@ -29,10 +28,10 @@ db_status = "Desconocido" # Variable global para el status
 
 # --- 4. DEFINIR LA FÁBRICA DE LA APLICACIÓN ---
 def create_app():
-    global db_status # Para poder actualizar la variable global
+    global db_status 
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v18.0 - Factory Pattern) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v18.2 - Corregido) <<<")
 
     # --- 5. CONFIGURACIÓN DE APP ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -61,10 +60,9 @@ def create_app():
     cors.init_app(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
     socketio.init_app(app, cors_allowed_origins="*")
     bcrypt.init_app(app)
-    db.init_app(app) # Conecta la 'db' importada a nuestra 'app'
+    db.init_app(app) 
 
     # --- 7. DEFINIR FUNCIONES Y RUTAS DENTRO DE LA FÁBRICA ---
-    # (Todo el resto de tu código va AQUÍ, dentro de create_app)
     
     # --- Directorios Universales ---
     BASE_DIR = os.getcwd()
@@ -105,8 +103,8 @@ def create_app():
     # --- Rutas de Descarga y Health Check ---
     @app.route('/')
     def health_check(): 
-        global db_status # Accede a la variable global
-        return jsonify({"status": "v18.0 ONLINE (Factory)", "db": db_status}), 200
+        global db_status 
+        return jsonify({"status": "v18.2 ONLINE (Factory)", "db": db_status}), 200
 
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
@@ -151,24 +149,86 @@ def create_app():
         d = request.get_json()
         if User.query.filter_by(username=d.get('username')).first(): return jsonify({"message": "Usuario ocupado"}), 409
         if User.query.filter_by(email=d.get('email')).first(): return jsonify({"message": "Email ocupado"}), 409
-        new_user = User(username=d.get('username'), hash=bcrypt.generate_password_hash(d.get('password')).decode('utf-8'), email=d.get('email'), identificador=d.get('identificador'), role="gratis", fingerprint=d.get('username').lower())
+        
+        new_user = User(
+            username=d.get('username'), 
+            hash=bcrypt.generate_password_hash(d.get('password')).decode('utf-8'), 
+            email=d.get('email'), 
+            identificador=d.get('identificador'), 
+            role="gratis", 
+            fingerprint=d.get('username').lower()
+        )
+        
         try:
+            # --- ✅ INICIO DE LA CORRECCIÓN (v18.2) ---
+            # PASO 1: Guardar el usuario PRIMERO.
             db.session.add(new_user)
-            db.session.add(UserFile(owner_username=d.get('username'), name="Archivos de Usuario", type='folder', parent_id=None, size_bytes=0))
             db.session.commit()
+            
+            # PASO 2: AHORA que el usuario existe, creamos su carpeta.
+            # (El error de la foto (UndefinedColumn) se arregla en models.py)
+            new_folder = UserFile(
+                owner_username=d.get('username'), 
+                name="Archivos de Usuario", 
+                type='folder', 
+                parent_id=None, 
+                size_bytes=0,
+                verification_status='N/A' # Coincide con models.py
+            )
+            db.session.add(new_folder)
+            db.session.commit()
+            # --- ✅ FIN DE LA CORRECCIÓN ---
+
             ONLINE_USERS[d.get('username')] = datetime.datetime.utcnow()
             emit_online_count()
             return jsonify({"message": "Registrado"}), 201
-        except Exception as e: db.session.rollback(); return jsonify({"message": str(e)}), 500
+            
+        except Exception as e: 
+            db.session.rollback()
+            print(f"!!! ERROR FATAL EN REGISTRO: {e}")
+            return jsonify({"message": f"Error de BD: {str(e)}"}), 500
 
     @app.route('/api/login', methods=['POST'])
     def login():
         d = request.get_json()
         u = User.query.filter_by(username=d.get('username')).first()
+        
         if u and bcrypt.check_password_hash(u.hash, d.get('password')):
+            
+            # --- ✅ CORRECCIÓN "LOGIN CURATIVO" (v18.2) ---
+            # Esto arregla tu cuenta antigua (y la de cualquier usuario antiguo)
+            try:
+                root_folder = UserFile.query.filter_by(
+                    owner_username=u.username, 
+                    parent_id=None, 
+                    name="Archivos de Usuario"
+                ).first()
+                
+                if not root_folder:
+                    # Si no la tiene (es un usuario antiguo), la creamos AHORA.
+                    print(f"INFO: [Login] Creando carpeta raíz faltante para usuario antiguo: {u.username}")
+                    new_root = UserFile(
+                        owner_username=u.username, 
+                        name="Archivos de Usuario", 
+                        type='folder', 
+                        parent_id=None, 
+                        size_bytes=0,
+                        verification_status='N/A' # Coincide con models.py
+                    )
+                    db.session.add(new_root)
+                    db.session.commit()
+                else:
+                    print(f"INFO: [Login] Carpeta raíz verificada para {u.username}")
+                
+            except Exception as e:
+                db.session.rollback()
+                print(f"ERROR CRÍTICO: No se pudo crear/verificar la carpeta raíz para {u.username}: {e}")
+            # --- ✅ FIN DE LA CORRECCIÓN ---
+
             ONLINE_USERS[u.username] = datetime.datetime.utcnow()
             emit_online_count()
             return jsonify({"message": "OK", "user": {"username": u.username, "email": u.email, "role": u.role, "identificador": u.identificador, "isAdmin": u.role == 'admin'}}), 200
+            
         return jsonify({"message": "Credenciales inválidas"}), 401
 
     @app.route('/api/heartbeat', methods=['POST'])
@@ -300,6 +360,7 @@ def create_app():
                 root_folder = UserFile.query.filter_by(owner_username=user_id, parent_id=None, name="Archivos de Usuario").first()
                 parent_id = root_folder.id if root_folder else None
 
+            # (Asegúrate que models.py tenga verification_status)
             new_file = UserFile(
                 owner_username=user_id, name=filename, type='file', 
                 parent_id=parent_id, size_bytes=file_size, storage_path=unique_name,
@@ -331,12 +392,19 @@ def create_app():
                 root_folder = UserFile.query.filter_by(owner_username=d.get('userId'), parent_id=None, name="Archivos de Usuario").first()
                 parent_id = root_folder.id if root_folder else None
 
-            nf = UserFile(owner_username=d.get('userId'), name=d.get('name'), type='folder', parent_id=parent_id, size_bytes=0)
+            nf = UserFile(
+                owner_username=d.get('userId'), 
+                name=d.get('name'), 
+                type='folder', 
+                parent_id=parent_id, 
+                size_bytes=0,
+                verification_status='N/A' # Coincide con models.py
+            )
             db.session.add(nf); db.session.commit()
             return jsonify({"newFolder": {
                 "id": nf.id, "name": nf.name, "type": "folder", "parentId": nf.parent_id, 
                 "date": nf.created_at.strftime('%Y-%m-%d'), 
-                "size": "0 KB", "size_bytes": 0, "isPublished": False, "verificationStatus": None
+                "size": "0 KB", "size_bytes": 0, "isPublished": False, "verificationStatus": 'N/A'
                 }}), 201
         except Exception as e: return jsonify({"message": str(e)}), 500
 
