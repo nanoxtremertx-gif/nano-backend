@@ -1,4 +1,4 @@
-# --- servidor.py --- (v18.3 - Añadido borrado de admin)
+# --- servidor.py --- (v18.4 - SOPORTE REAL DE CARPETAS DE GESTIÓN)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -31,7 +31,7 @@ def create_app():
     global db_status 
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v18.3 - Corregido) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v18.4 - Con Carpetas de Gestión) <<<")
 
     # --- 5. CONFIGURACIÓN DE APP ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -94,6 +94,8 @@ def create_app():
         return f"{request.host_url}{folder_route}/{filename}"
 
     def format_file_size(size_bytes):
+        # --- (Modificación v18.4) ---
+        if size_bytes is None: return "N/A" # Las carpetas no tienen tamaño
         if size_bytes < 1024:
             return f"{size_bytes} Bytes"
         if size_bytes < 1048576: return f"{size_bytes / 1024:.1f} KB"
@@ -104,7 +106,7 @@ def create_app():
     @app.route('/')
     def health_check(): 
         global db_status 
-        return jsonify({"status": "v18.3 ONLINE (Factory)", "db": db_status}), 200
+        return jsonify({"status": "v18.4 ONLINE (Factory)", "db": db_status}), 200
 
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
@@ -160,24 +162,19 @@ def create_app():
         )
         
         try:
-            # --- ✅ INICIO DE LA CORRECCIÓN (v18.2) ---
-            # PASO 1: Guardar el usuario PRIMERO.
             db.session.add(new_user)
             db.session.commit()
             
-            # PASO 2: AHORA que el usuario existe, creamos su carpeta.
-            # (El error de la foto (UndefinedColumn) se arregla en models.py)
             new_folder = UserFile(
                 owner_username=d.get('username'), 
                 name="Archivos de Usuario", 
                 type='folder', 
                 parent_id=None, 
                 size_bytes=0,
-                verification_status='N/A' # Coincide con models.py
+                verification_status='N/A'
             )
             db.session.add(new_folder)
             db.session.commit()
-            # --- ✅ FIN DE LA CORRECCIÓN ---
 
             ONLINE_USERS[d.get('username')] = datetime.datetime.utcnow()
             emit_online_count()
@@ -195,8 +192,6 @@ def create_app():
         
         if u and bcrypt.check_password_hash(u.hash, d.get('password')):
             
-            # --- ✅ CORRECCIÓN "LOGIN CURATIVO" (v18.2) ---
-            # Esto arregla tu cuenta antigua (y la de cualquier usuario antiguo)
             try:
                 root_folder = UserFile.query.filter_by(
                     owner_username=u.username, 
@@ -205,7 +200,6 @@ def create_app():
                 ).first()
                 
                 if not root_folder:
-                    # Si no la tiene (es un usuario antiguo), la creamos AHORA.
                     print(f"INFO: [Login] Creando carpeta raíz faltante para usuario antiguo: {u.username}")
                     new_root = UserFile(
                         owner_username=u.username, 
@@ -213,7 +207,7 @@ def create_app():
                         type='folder', 
                         parent_id=None, 
                         size_bytes=0,
-                        verification_status='N/A' # Coincide con models.py
+                        verification_status='N/A'
                     )
                     db.session.add(new_root)
                     db.session.commit()
@@ -223,7 +217,6 @@ def create_app():
             except Exception as e:
                 db.session.rollback()
                 print(f"ERROR CRÍTICO: No se pudo crear/verificar la carpeta raíz para {u.username}: {e}")
-            # --- ✅ FIN DE LA CORRECCIÓN ---
 
             ONLINE_USERS[u.username] = datetime.datetime.utcnow()
             emit_online_count()
@@ -316,19 +309,16 @@ def create_app():
         if username in ONLINE_USERS: del ONLINE_USERS[username]
         return jsonify({"message": "Eliminado"}), 200
 
-    # --- INICIO DE LA MODIFICACIÓN (AÑADIDO PARA delete_tool_ui.py) ---
     @app.route('/api/admin/delete-public-file/<int:file_id>', methods=['DELETE'])
     def admin_delete_public_file(file_id):
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: 
             return jsonify({"msg": "Acceso denegado"}), 403
         
         try:
-            # 1. Encontrar el archivo en la BD
             f = UserFile.query.get(file_id)
             if not f:
                 return jsonify({"message": "File not found"}), 404
             
-            # 2. Borrar el archivo físico del servidor
             if f.storage_path:
                 try:
                     file_path = os.path.join(UPLOAD_FOLDER, f.storage_path)
@@ -336,9 +326,7 @@ def create_app():
                         os.remove(file_path)
                 except Exception as e:
                     print(f"Error al borrar archivo físico: {e}")
-                    # No detenemos el proceso, aún queremos borrar la entrada de la BD
             
-            # 3. Borrar la entrada de la BD
             db.session.delete(f)
             db.session.commit()
             
@@ -347,7 +335,6 @@ def create_app():
         except Exception as e:
             db.session.rollback()
             return jsonify({"message": f"Error de servidor: {str(e)}"}), 500
-    # --- FIN DE LA MODIFICACIÓN ---
 
     # --- Rutas de Archivos de Usuario (misarchivos.jsx) ---
     @app.route('/api/my-files/<username>', methods=['GET'])
@@ -393,7 +380,6 @@ def create_app():
                 root_folder = UserFile.query.filter_by(owner_username=user_id, parent_id=None, name="Archivos de Usuario").first()
                 parent_id = root_folder.id if root_folder else None
 
-            # (Asegúrate que models.py tenga verification_status)
             new_file = UserFile(
                 owner_username=user_id, name=filename, type='file', 
                 parent_id=parent_id, size_bytes=file_size, storage_path=unique_name,
@@ -431,7 +417,7 @@ def create_app():
                 type='folder', 
                 parent_id=parent_id, 
                 size_bytes=0,
-                verification_status='N/A' # Coincide con models.py
+                verification_status='N/A'
             )
             db.session.add(nf); db.session.commit()
             return jsonify({"newFolder": {
@@ -506,23 +492,52 @@ def create_app():
         except: return jsonify({"error": "Error"}), 500
 
     # --- GESTIÓN DE DOCUMENTOS (documentos.jsx, vip.py, consola_admin.py) ---
+    
+    # --- ✅ MODIFICACIÓN 1: Listar Archivos ---
+    # Ahora devolvemos type y parent_id, que vienen de models.py
     @app.route('/api/documentos/<section>', methods=['GET'])
     def get_gestion_docs(section):
-        if section not in SUB_DOC_FOLDERS: return jsonify({"msg": "Sección inválida"}), 400
+        # (v18.4) La sección 'gestion' ahora es la única que soporta carpetas
+        if section != 'gestion': 
+             # Comportamiento antiguo para 'desarrollo' y 'operaciones'
+             if section not in SUB_DOC_FOLDERS: return jsonify({"msg": "Sección inválida"}), 400
+             try:
+                 docs = DocGestion.query.filter_by(section=section, type='file').all() # Solo archivos
+                 return jsonify([{
+                     "id": d.id, "name": d.name, "size": d.size, "date": d.created_at.isoformat(),
+                     "url": get_file_url(os.path.join(section, d.storage_path), 'documentos_gestion'),
+                     "type": 'file', "parent_id": None # Simula la data antigua
+                 } for d in docs]), 200
+             except: return jsonify([]), 200
+        
+        # Comportamiento nuevo solo para 'gestion'
         try:
             docs = DocGestion.query.filter_by(section=section).all()
             return jsonify([{
                 "id": d.id, "name": d.name, "size": d.size, "date": d.created_at.isoformat(),
-                "url": get_file_url(os.path.join(section, d.storage_path), 'documentos_gestion')
+                "url": get_file_url(os.path.join(section, d.storage_path), 'documentos_gestion') if d.storage_path else None,
+                "type": d.type, 
+                "parent_id": d.parent_id 
             } for d in docs]), 200
-        except: return jsonify([]), 200
+        except Exception as e: 
+            print(f"Error en get_gestion_docs: {e}")
+            return jsonify([]), 200
 
+    # --- ✅ MODIFICACIÓN 2: Subir Archivo ---
+    # Ahora leemos el 'parentId' que nos envía vip.py
     @app.route('/api/documentos/upload', methods=['POST'])
     def upload_gestion_doc():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         try:
             if 'file' not in request.files or 'section' not in request.form: return jsonify({"message": "Faltan datos"}), 400
-            file = request.files['file']; section = request.form['section']
+            file = request.files['file']
+            section = request.form['section']
+            
+            # --- Leemos el PARENT ID ---
+            # (El 'None' de vip.py se volverá 'null' o 0, lo parseamos a Int o None)
+            parent_id_str = request.form.get('parentId')
+            parent_id = int(parent_id_str) if parent_id_str and parent_id_str != 'null' and parent_id_str != 'None' else None
+            
             if section not in SUB_DOC_FOLDERS: return jsonify({"message": "Sección inválida"}), 400
             
             filename = secure_filename(file.filename)
@@ -532,10 +547,66 @@ def create_app():
             file.save(save_path)
             file_size = os.path.getsize(save_path)
             
-            new_doc = DocGestion(name=filename, section=section, size=file_size, storage_path=storage_name)
+            # --- GUARDAMOS EL ARCHIVO CON SU PARENT ID Y TYPE ---
+            new_doc = DocGestion(
+                name=filename, 
+                section=section, 
+                size=file_size, 
+                storage_path=storage_name,
+                type='file', # Es un archivo
+                parent_id=parent_id # Lo asignamos a su carpeta
+            )
             db.session.add(new_doc); db.session.commit()
-            return jsonify({"message": "Documento subido"}), 201
-        except Exception as e: return jsonify({"message": f"Error: {str(e)}"}), 500
+            return jsonify({"message": "Documento subido", "new_doc": {
+                "id": new_doc.id, "name": new_doc.name, "type": 'file', "parent_id": new_doc.parent_id
+            }}), 201
+        except Exception as e: 
+            db.session.rollback()
+            return jsonify({"message": f"Error: {str(e)}"}), 500
+
+    # --- ✅ MODIFICACIÓN 3: Crear Carpeta ---
+    # Esta ruta es completamente nueva
+    @app.route('/api/documentos/create-folder', methods=['POST'])
+    def create_gestion_folder():
+        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: 
+            return jsonify({"msg": "Acceso denegado"}), 403
+        try:
+            d = request.get_json()
+            # Parseamos el parentId
+            parent_id_str = d.get('parentId')
+            parent_id = int(parent_id_str) if parent_id_str and parent_id_str != 'null' and parent_id_str != 'None' else None
+            
+            name = d.get('name')
+            section = d.get('section', 'gestion') # 'gestion' por defecto
+
+            if not name:
+                return jsonify({"message": "Falta el nombre"}), 400
+
+            new_folder = DocGestion(
+                name=name,
+                section=section,
+                type='folder', # Es una carpeta
+                parent_id=parent_id, # Asignada a su carpeta padre
+                size=None,
+                storage_path=None
+            )
+            db.session.add(new_folder)
+            db.session.commit()
+            
+            # Devolvemos la nueva carpeta creada (con su ID real de la BD)
+            return jsonify({"message": "Carpeta creada", "newFolder": {
+                "id": new_folder.id, 
+                "name": new_folder.name,
+                "type": 'folder',
+                "parent_id": new_folder.parent_id,
+                "section": new_folder.section,
+                "date": new_folder.created_at.isoformat(),
+                "size": None,
+                "url": None
+            }}), 201
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"message": f"Error: {str(e)}"}), 500
 
     @app.route('/api/documentos/delete/<int:doc_id>', methods=['DELETE'])
     def delete_gestion_doc(doc_id):
@@ -545,6 +616,12 @@ def create_app():
             doc = DocGestion.query.get(doc_id)
             if not doc:
                 return jsonify({"message": "Documento no encontrado"}), 404
+            
+            # --- (Mejora v18.4) Borrado recursivo si es carpeta ---
+            if doc.type == 'folder':
+                children = DocGestion.query.filter_by(parent_id=doc_id).all()
+                if len(children) > 0:
+                    return jsonify({"message": "La carpeta no está vacía. Borre el contenido primero."}), 400
             
             if doc.storage_path:
                 try:
