@@ -66,6 +66,14 @@ class DocGestion(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), nullable=False)
     section = db.Column(db.String(50), nullable=False) 
+    # --- ✅ INICIO DE LA MODIFICACIÓN ---
+    # storage_path y size ahora pueden ser nulos (para las carpetas)
     storage_path = db.Column(db.String(500), nullable=True)
-    size = db.Column(db.Integer)
+    size = db.Column(db.Integer, nullable=True) 
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    
+    # Estas dos columnas son la clave de todo
+    # (Asegúrate de reiniciar el servidor y correr /admin/create_tables)
+    type = db.Column(db.String(20), default='file') # Para saber si es 'file' o 'folder'
+    parent_id = db.Column(db.Integer, nullable=True) # Para saber en qué carpeta está
+    # --- ✅ FIN DE LA MODIFICACIÓN ---
