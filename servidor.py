@@ -1,4 +1,4 @@
-# --- servidor.py --- (v18.2 - Corregido Registro y Login)
+# --- servidor.py --- (v18.3 - Añadido borrado de admin)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -31,7 +31,7 @@ def create_app():
     global db_status 
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v18.2 - Corregido) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v18.3 - Corregido) <<<")
 
     # --- 5. CONFIGURACIÓN DE APP ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -104,7 +104,7 @@ def create_app():
     @app.route('/')
     def health_check(): 
         global db_status 
-        return jsonify({"status": "v18.2 ONLINE (Factory)", "db": db_status}), 200
+        return jsonify({"status": "v18.3 ONLINE (Factory)", "db": db_status}), 200
 
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
@@ -315,6 +315,39 @@ def create_app():
         if u: db.session.delete(u); db.session.commit()
         if username in ONLINE_USERS: del ONLINE_USERS[username]
         return jsonify({"message": "Eliminado"}), 200
+
+    # --- INICIO DE LA MODIFICACIÓN (AÑADIDO PARA delete_tool_ui.py) ---
+    @app.route('/api/admin/delete-public-file/<int:file_id>', methods=['DELETE'])
+    def admin_delete_public_file(file_id):
+        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: 
+            return jsonify({"msg": "Acceso denegado"}), 403
+        
+        try:
+            # 1. Encontrar el archivo en la BD
+            f = UserFile.query.get(file_id)
+            if not f:
+                return jsonify({"message": "File not found"}), 404
+            
+            # 2. Borrar el archivo físico del servidor
+            if f.storage_path:
+                try:
+                    file_path = os.path.join(UPLOAD_FOLDER, f.storage_path)
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                except Exception as e:
+                    print(f"Error al borrar archivo físico: {e}")
+                    # No detenemos el proceso, aún queremos borrar la entrada de la BD
+            
+            # 3. Borrar la entrada de la BD
+            db.session.delete(f)
+            db.session.commit()
+            
+            return jsonify({"message": "Archivo eliminado permanentemente"}), 200
+            
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"message": f"Error de servidor: {str(e)}"}), 500
+    # --- FIN DE LA MODIFICACIÓN ---
 
     # --- Rutas de Archivos de Usuario (misarchivos.jsx) ---
     @app.route('/api/my-files/<username>', methods=['GET'])
