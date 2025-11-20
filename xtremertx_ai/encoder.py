@@ -1,4 +1,4 @@
-# encoder.py (v12.9.1 - Guardado de Fidelidad)
+# encoder.py (v12.9.3 - Lógica de Clave Corregida)
 import os
 import pickle
 import numpy as np
@@ -14,6 +14,7 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import json
+from datetime import datetime # <-- MODIFICACIÓN
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
@@ -48,9 +49,9 @@ def get_tracker_author(tracker_path: Path) -> str | None:
     except Exception: return None
 
 # --- FUNCIÓN PRINCIPAL DE CREACIÓN DEL CRS ---
-def create_genesis_crs(image_path: Path, output_base_name: str, crs_dir: Path, models_dir: Path, password: str = None, author: str = None, fidelity_quality: int = 95, tracker_path: Path = None):
+def create_genesis_crs(image_path: Path, output_base_name: str, crs_dir: Path, models_dir: Path, password: str = None, author: str = None, fidelity_quality: int = 95, tracker_path: Path = None, password_mode: str = 'none'):
     report_progress(0)
-    print(f"--- XtremeRTX Encoder v12.9.1 (Guardado de Fidelidad) ---")
+    print(f"--- XtremeRTX Encoder v12.9.3 (Lógica de Clave Corregida) ---")
 
     # 1. LÓGICA DE AUTORÍA DUAL
     tracker_author_code = get_tracker_author(tracker_path)
@@ -100,36 +101,69 @@ def create_genesis_crs(image_path: Path, output_base_name: str, crs_dir: Path, m
     report_progress(90)
 
     # 7. EMPAQUETADO FINAL
+    # Este es el diccionario INTERNO (el que se encripta o no)
     crs_data = {
         "version": "12.9_PerceptualFinal",
         "core_seed": core_seed,
         "fidelity_seed": fidelity_seed,
         "true_original_shape": (original_w, original_h),
         "original_format": original_pil.format,
-        "fidelity_quality": fidelity_quality # <-- ¡NUEVA LÍNEA AÑADIDA!
+        "fidelity_quality": fidelity_quality
     }
 
     if author:
         crs_data['author'] = author
 
-    public_metadata = { 'public_author': public_author_value, 'version_id': "12.9_PerceptualFinal" }
+    # Metadatos PÚBLICOS (siempre visibles)
+    creation_timestamp = datetime.now().isoformat() # <-- MODIFICACIÓN
+
+    public_metadata = { 
+        'public_author': public_author_value, 
+        'version_id': "12.9_PerceptualFinal",
+        'password_mode': password_mode,
+        'created_at': creation_timestamp # <-- MODIFICACIÓN
+    }
     
     crs_path = crs_dir / f"{output_base_name}.crs"
+    final_data_to_save = {}
 
-    if password:
+    # --- MODIFICACIÓN: LÓGICA DE GUARDADO CORREGIDA ---
+    if password_mode == 'full' and password:
+        # MODO "Evocar y Leer": Encriptar todo.
+        print(f"INFO: Encriptando CRS (Modo: {password_mode})")
         encrypted_block = encrypt_data(crs_data, password)
-        final_data_to_write = pickle.dumps({**pickle.loads(encrypted_block), **public_metadata})
+        final_data_to_save = pickle.loads(encrypted_block) # Esto es {'is_encrypted': True, 'salt': ..., 'encrypted_data': ...}
+        final_data_to_save.update(public_metadata) # Añadir metadatos públicos al exterior
+
+    elif password_mode == 'evoke_only' and password:
+        # MODO "Solo Evocar": NO encriptar. Guardar hash de la clave.
+        print(f"INFO: Guardando CRS con candado de Evocación (Modo: {password_mode})")
+        salt = os.urandom(16)
+        key_hash = derive_key(password, salt) # Generar el hash de la clave
+        
+        final_data_to_save = crs_data.copy() # Empezar con los datos internos
+        final_data_to_save.update(public_metadata) # Añadir metadatos públicos
+        final_data_to_save['is_encrypted'] = False # ¡Explícitamente NO encriptado!
+        final_data_to_save['evoke_salt'] = salt     # Añadir salt para el hash
+        final_data_to_save['evoke_key_hash'] = key_hash # Añadir el hash
+
     else:
-        final_data_to_write = pickle.dumps({**crs_data, **public_metadata})
+        # MODO "Sin clave"
+        print(f"INFO: Guardando CRS sin encriptar (Modo: {password_mode})")
+        final_data_to_save = crs_data.copy()
+        final_data_to_save.update(public_metadata)
+        final_data_to_save['is_encrypted'] = False
+    # --- FIN DE MODIFICACIÓN ---
 
     with open(crs_path, "wb") as f:
-        f.write(final_data_to_write)
+        f.write(pickle.dumps(final_data_to_save))
+        
     total_size = os.path.getsize(crs_path) / 1024
     print(f"-> Archivo CRS generado: {crs_path} ({total_size:.2f} KB)")
     report_progress(100)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Encoder v12.9.1 - Perceptual")
+    parser = argparse.ArgumentParser(description="Encoder v12.9.3 - Perceptual")
     parser.add_argument("input_file", type=Path)
     parser.add_argument("output_name", type=str)
     parser.add_argument("--crs_dir", type=Path, required=True)
@@ -138,5 +172,6 @@ if __name__ == "__main__":
     parser.add_argument("--author", type=str, default=None)
     parser.add_argument("--fidelity_quality", type=int, default=95)
     parser.add_argument("--tracker_path", type=Path, default=None, help="Ruta opcional al usage_tracker.json")
+    parser.add_argument("--password_mode", type=str, default="none", help="Modo de protección de contraseña ('full', 'evoke_only', 'none')")
     args = parser.parse_args()
-    create_genesis_crs(args.input_file, args.output_name, args.crs_dir, args.models_dir, args.password, args.author, args.fidelity_quality, args.tracker_path)
+    create_genesis_crs(args.input_file, args.output_name, args.crs_dir, args.models_dir, args.password, args.author, args.fidelity_quality, args.tracker_path, args.password_mode)
