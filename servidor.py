@@ -1,4 +1,4 @@
-# --- servidor.py --- (v18.5 - SOPORTE PERFIL Y AVATARES)
+# --- servidor.py --- (v19.0 - MAESTRO CON PUENTE DE IA)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -9,6 +9,7 @@ from datetime import timedelta
 import uuid
 import os
 import pickle
+import requests # <--- NUEVO: Para llamar al Servidor 2
 from urllib.parse import urlparse, urlunparse
 from sqlalchemy import text 
 
@@ -25,12 +26,16 @@ ONLINE_USERS = {}
 ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
 db_status = "Desconocido" 
 
+# --- URL DEL SERVIDOR 2 (IA) ---
+# Esta variable busca la URL en las config de Hugging Face, si no, usa localhost
+SERVER_2_URL = os.environ.get("SERVER_2_URL", "http://127.0.0.1:5001")
+
 # --- 4. DEFINIR LA FÁBRICA DE LA APLICACIÓN ---
 def create_app():
     global db_status 
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v18.5 - Con Perfiles) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v19.0 - Bridge Mode) <<<")
 
     # --- 5. CONFIGURACIÓN DE APP ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -105,7 +110,7 @@ def create_app():
     @app.route('/')
     def health_check(): 
         global db_status 
-        return jsonify({"status": "v18.5 ONLINE (Factory)", "db": db_status}), 200
+        return jsonify({"status": "v19.0 ONLINE (Master Bridge)", "db": db_status, "worker_node": SERVER_2_URL}), 200
 
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
@@ -464,6 +469,54 @@ def create_app():
                 }}), 200
             return jsonify({"msg": "404"}), 404
         except Exception as e: return jsonify({"message": str(e)}), 500
+
+    # --- SECCIÓN PUENTE A SERVIDOR 2 ---
+    # Esta es la ruta que llamará tu Frontend cuando use el "Ojo".
+    # Actúa como Proxy y Despertador.
+    @app.route('/api/bridge/preview', methods=['POST'])
+    def bridge_preview():
+        # 1. Recibir datos del usuario
+        file_id = request.form.get('fileId')
+        password = request.form.get('password')
+
+        if not file_id:
+            return jsonify({"success": False, "error": "Falta fileId"}), 400
+
+        # 2. Buscar archivo local en Server 1
+        file_record = UserFile.query.get(file_id)
+        if not file_record or not file_record.storage_path:
+            return jsonify({"success": False, "error": "Archivo no encontrado en DB"}), 404
+
+        local_path = os.path.join(UPLOAD_FOLDER, file_record.storage_path)
+        if not os.path.exists(local_path):
+            return jsonify({"success": False, "error": "Archivo físico perdido"}), 404
+
+        # 3. Llamar (DESPERTAR) al Servidor 2
+        endpoint = f"{SERVER_2_URL}/generate-crs-preview"
+        print(f">>> INTENTANDO DESPERTAR A SERVIDOR 2 EN: {endpoint}")
+        
+        try:
+            with open(local_path, 'rb') as f:
+                files = {'file': (file_record.name, f, 'application/octet-stream')}
+                data = {'password': password} if password else {}
+                
+                # Timeout alto (50s) para dar tiempo a que despierte de la hibernación
+                response = requests.post(endpoint, files=files, data=data, timeout=50)
+
+            # 4. Devolver la respuesta tal cual al usuario
+            if response.status_code == 200:
+                return jsonify(response.json()), 200
+            elif response.status_code == 401:
+                return jsonify({"success": False, "error": "LOCKED_FILE"}), 401
+            else:
+                return jsonify({"success": False, "error": "Fallo en IA", "details": response.text}), 500
+
+        except requests.exceptions.ConnectionError:
+            return jsonify({"success": False, "error": "La IA está durmiendo o saturada. Reintenta en 10s."}), 503
+        except requests.exceptions.Timeout:
+            return jsonify({"success": False, "error": "La IA tardó demasiado en despertar."}), 504
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Error puente: {str(e)}"}), 500
 
     @app.route('/get-crs-author', methods=['POST'])
     def inspect_crs_author():
