@@ -1,4 +1,4 @@
-# encoderb.py (v20.2 - Generalista Perceptual, Encriptación y Autoría)
+# encoderb.py (v20.4 - Lógica de Clave Corregida)
 import os
 import pickle
 import numpy as np
@@ -13,7 +13,8 @@ import hashlib
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-import json # <--- AGREGADO
+import json 
+from datetime import datetime # <-- MODIFICACIÓN
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
@@ -63,9 +64,9 @@ def get_tracker_author(tracker_path: Path) -> str | None:
         # Silenciamos cualquier error de JSON o lectura para evitar que la API se rompa
         return None
 
-def create_generalista_crs(image_path: Path, output_base_name: str, crs_dir: Path, models_dir: Path, password: str = None, author: str = None, tracker_path: Path = None):
+def create_generalista_crs(image_path: Path, output_base_name: str, crs_dir: Path, models_dir: Path, password: str = None, author: str = None, tracker_path: Path = None, password_mode: str = 'none'):
     report_progress(0)
-    print(f"--- XtremeRTX Encoder v20.2 (Ruta Corregida y Autoría) ---")
+    print(f"--- XtremeRTX Encoder v20.4 (Lógica de Clave Corregida) ---")
     
     # 1. OBTENER EL CÓDIGO DE AUTOR PARA LOS LENTES (Lógica de Lentes Seguros)
     tracker_author_code = get_tracker_author(tracker_path)
@@ -139,31 +140,51 @@ def create_generalista_crs(image_path: Path, output_base_name: str, crs_dir: Pat
         print(f"- Marca de autoría añadida (Interna/Sensible): {author}")
     
     # --- LENTES: METADATOS PÚBLICOS (El ID derivado o Fallback) ---
+    creation_timestamp = datetime.now().isoformat() # <-- MODIFICACIÓN
+
     public_metadata = {
         'public_author': public_author_value, 
-        'version_id': crs_data.get('version', 'Legacy') 
+        'version_id': crs_data.get('version', 'Legacy'),
+        'password_mode': password_mode,
+        'created_at': creation_timestamp # <-- MODIFICACIÓN
     }
     # -----------------------------------------------------------
     
     os.makedirs(crs_dir, exist_ok=True)
     crs_path = crs_dir / f"{output_base_name}.crs"
+    final_data_to_save = {}
 
-    if password:
-        # --- CASO ENCRIPTADO: Modificar el diccionario EXTERNO ---
-        print("INFO: Se detectó contraseña. Encriptando archivo CRS...")
+    # --- MODIFICACIÓN: LÓGICA DE GUARDADO CORREGIDA ---
+    if password_mode == 'full' and password:
+        # MODO "Evocar y Leer": Encriptar todo.
+        print(f"INFO: Encriptando CRS (Modo: {password_mode})")
         encrypted_block_binary = encrypt_data(crs_data, password)
-        outer_crs_data = pickle.loads(encrypted_block_binary) 
-        outer_crs_data.update(public_metadata) 
-        final_data_to_write = pickle.dumps(outer_crs_data)
+        final_data_to_save = pickle.loads(encrypted_block_binary) 
+        final_data_to_save.update(public_metadata) 
+    
+    elif password_mode == 'evoke_only' and password:
+        # MODO "Solo Evocar": NO encriptar. Guardar hash de la clave.
+        print(f"INFO: Guardando CRS con candado de Evocación (Modo: {password_mode})")
+        salt = os.urandom(16)
+        key_hash = derive_key(password, salt)
+        
+        final_data_to_save = crs_data.copy()
+        final_data_to_save.update(public_metadata)
+        final_data_to_save['is_encrypted'] = False
+        final_data_to_save['evoke_salt'] = salt
+        final_data_to_save['evoke_key_hash'] = key_hash
+
     else:
-        # --- CASO NO ENCRIPTADO: Modificar el diccionario INTERNO ---
-        print("INFO: No se proporcionó contraseña. Guardando sin encriptar.")
-        crs_data.update(public_metadata)
-        final_data_to_write = pickle.dumps(crs_data)
+        # MODO "Sin clave"
+        print(f"INFO: Guardando CRS sin encriptar (Modo: {password_mode})")
+        final_data_to_save = crs_data.copy()
+        final_data_to_save.update(public_metadata)
+        final_data_to_save['is_encrypted'] = False
+    # --- FIN DE MODIFICACIÓN ---
 
     try:
         with open(crs_path, "wb") as f:
-            f.write(final_data_to_write)
+            f.write(pickle.dumps(final_data_to_save))
         total_size = os.path.getsize(crs_path) / 1024
         print(f"-> Archivo CRS (Generalista) generado: {crs_path} ({total_size:.2f} KB)")
     except Exception as e:
@@ -173,14 +194,14 @@ def create_generalista_crs(image_path: Path, output_base_name: str, crs_dir: Pat
     report_progress(100)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Encoder v20.2")
+    parser = argparse.ArgumentParser(description="Encoder v20.4")
     parser.add_argument("input_file", type=Path)
     parser.add_argument("output_name", type=str)
     parser.add_argument("--crs_dir", type=Path, required=True)
     parser.add_argument("--models_dir", type=Path, required=True)
     parser.add_argument("--password", type=str, default=None)
     parser.add_argument("--author", type=str, default=None)
-    parser.add_argument("--tracker_path", type=Path, default=None, help="Ruta opcional al usage_tracker.json para obtener el author ID de la API (para los Lentes).") # <-- ARGUMENTO OPCIONAL
-
+    parser.add_argument("--tracker_path", type=Path, default=None, help="Ruta opcional al usage_tracker.json para obtener el author ID de la API (para los Lentes).")
+    parser.add_argument("--password_mode", type=str, default="none", help="Modo de protección de contraseña ('full', 'evoke_only', 'none')")
     args = parser.parse_args()
-    create_generalista_crs(args.input_file, args.output_name, args.crs_dir, args.models_dir, args.password, args.author, args.tracker_path)
+    create_generalista_crs(args.input_file, args.output_name, args.crs_dir, args.models_dir, args.password, args.author, args.tracker_path, args.password_mode)
