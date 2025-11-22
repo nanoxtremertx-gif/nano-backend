@@ -1,4 +1,4 @@
-# --- servidor.py --- (v18.5 - MAESTRO PURO - SIN IA)
+# --- servidor.py --- (v18.6 - MAESTRO PURO - CON SOPORTE GESTIÓN DE CARPETAS)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -30,7 +30,7 @@ def create_app():
     global db_status 
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v18.5 - Core System) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v18.6 - Core System con Fix DB) <<<")
 
     # --- 5. CONFIGURACIÓN DE APP ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -101,7 +101,7 @@ def create_app():
     # --- RUTAS PÚBLICAS Y HEALTH CHECK ---
     @app.route('/')
     def health_check(): 
-        return jsonify({"status": "v18.5 ONLINE (Maestro)", "db": db_status}), 200
+        return jsonify({"status": "v18.6 ONLINE (Maestro)", "db": db_status}), 200
 
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
@@ -418,44 +418,108 @@ def create_app():
             return jsonify({"authorId": str(author_id)}), 200
         except: return jsonify({"error": "Error"}), 500
 
-    # --- DOCUMENTOS Y LOGS ---
-    # (Mantengo estas rutas compactadas porque son CRUD básico)
+    # --- DOCUMENTOS Y LOGS (ACTUALIZADO PARA CARPETAS GESTIÓN) ---
+    
     @app.route('/api/documentos/<section>', methods=['GET'])
     def get_gestion_docs(section):
         try:
             docs = DocGestion.query.filter_by(section=section).all()
-            return jsonify([{"id": d.id, "name": d.name, "size": d.size, "url": get_file_url(os.path.join(section, d.storage_path), 'documentos_gestion') if d.storage_path else None, "type": d.type, "parent_id": d.parent_id} for d in docs]), 200
-        except: return jsonify([]), 200
+            return jsonify([
+                {
+                    "id": d.id, 
+                    "name": d.name, 
+                    "size": d.size, 
+                    "url": get_file_url(os.path.join(section, d.storage_path), 'documentos_gestion') if d.storage_path else None, 
+                    "type": d.type, 
+                    "parent_id": d.parent_id,
+                    "date": d.created_at.isoformat() if hasattr(d, 'created_at') else datetime.datetime.utcnow().isoformat()
+                } for d in docs
+            ]), 200
+        except Exception as e:
+            return jsonify([]), 200
 
     @app.route('/api/documentos/upload', methods=['POST'])
     def upload_gestion_doc():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         try:
-            file = request.files['file']; section = request.form['section']; parent_id = request.form.get('parentId')
-            if parent_id in ['null', 'None']: parent_id = None
-            filename = secure_filename(file.filename); storage_name = f"{uuid.uuid4().hex[:8]}_{filename}"
-            save_path = os.path.join(DOCS_FOLDER, section, storage_name); file.save(save_path); file_size = os.path.getsize(save_path)
-            new_doc = DocGestion(name=filename, section=section, size=file_size, storage_path=storage_name, type='file', parent_id=parent_id)
-            db.session.add(new_doc); db.session.commit()
+            file = request.files['file']
+            section = request.form['section']
+            parent_id = request.form.get('parentId')
+            
+            # Conversión segura de parent_id
+            if parent_id in ['null', 'None', '', 'undefined']: 
+                parent_id = None
+            else:
+                try: parent_id = int(parent_id)
+                except: parent_id = None
+
+            filename = secure_filename(file.filename)
+            storage_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+            save_path = os.path.join(DOCS_FOLDER, section, storage_name)
+            
+            # Asegurar carpeta física
+            os.makedirs(os.path.join(DOCS_FOLDER, section), exist_ok=True)
+            
+            file.save(save_path)
+            file_size = os.path.getsize(save_path)
+            
+            new_doc = DocGestion(
+                name=filename, 
+                section=section, 
+                size=file_size, 
+                storage_path=storage_name, 
+                type='file', 
+                parent_id=parent_id
+            )
+            db.session.add(new_doc)
+            db.session.commit()
             return jsonify({"message": "Subido"}), 201
-        except Exception as e: return jsonify({"message": str(e)}), 500
+        except Exception as e: 
+            return jsonify({"message": str(e)}), 500
 
     @app.route('/api/documentos/create-folder', methods=['POST'])
     def create_gestion_folder():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         try:
-            d = request.get_json(); parent_id = d.get('parentId')
-            if parent_id in ['null', 'None']: parent_id = None
-            new_folder = DocGestion(name=d.get('name'), section=d.get('section', 'gestion'), type='folder', parent_id=parent_id)
-            db.session.add(new_folder); db.session.commit()
-            return jsonify({"message": "Creada"}), 201
-        except Exception as e: return jsonify({"message": str(e)}), 500
+            d = request.get_json()
+            section = d.get('section', 'gestion')
+            parent_id = d.get('parentId')
+            
+            if parent_id in ['null', 'None', '', 'undefined']: 
+                parent_id = None
+            else:
+                try: parent_id = int(parent_id)
+                except: parent_id = None
+
+            new_folder = DocGestion(
+                name=d.get('name'), 
+                section=section, 
+                type='folder', 
+                parent_id=parent_id,
+                size=0,
+                storage_path=None
+            )
+            db.session.add(new_folder)
+            db.session.commit()
+            return jsonify({"message": "Carpeta creada"}), 201
+        except Exception as e: 
+            return jsonify({"message": str(e)}), 500
 
     @app.route('/api/documentos/delete/<int:doc_id>', methods=['DELETE'])
     def delete_gestion_doc(doc_id):
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         try:
-            doc = DocGestion.query.get(doc_id); db.session.delete(doc); db.session.commit()
+            doc = DocGestion.query.get(doc_id)
+            if not doc: return jsonify({"message": "No encontrado"}), 404
+
+            if doc.type == 'file' and doc.storage_path:
+                try:
+                    full_path = os.path.join(DOCS_FOLDER, doc.section, doc.storage_path)
+                    if os.path.exists(full_path): os.remove(full_path)
+                except: pass
+            
+            db.session.delete(doc)
+            db.session.commit()
             return jsonify({"message": "Eliminado"}), 200
         except Exception as e: return jsonify({"message": str(e)}), 500
 
@@ -531,6 +595,28 @@ def create_app():
             for u in users: profile_list.append({"username": u.username.lower(), "displayName": getattr(u, 'display_name', u.username.capitalize()), "avatar": getattr(u, 'avatar', '/user.ico')})
             return jsonify(profile_list), 200
         except: return jsonify([]), 200
+
+    # --- RUTA DE EMERGENCIA PARA ARREGLAR DB (EJECUTAR UNA VEZ) ---
+    @app.route('/admin/fix_doc_table', methods=['GET'])
+    def fix_doc_table_structure():
+        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: 
+            return jsonify({"msg": "Acceso denegado"}), 403
+        
+        try:
+            with app.app_context():
+                # 1. Borramos la tabla antigua que da error
+                print(">>> BORRANDO TABLA ANTIGUA doc_gestion...")
+                db.session.execute(text('DROP TABLE IF EXISTS doc_gestion CASCADE;'))
+                db.session.commit()
+                
+                # 2. Recreamos todas las tablas (esto creará doc_gestion con las columnas nuevas)
+                print(">>> RECREANDO TABLAS...")
+                db.create_all()
+                
+            return jsonify({"message": "ÉXITO: Tabla doc_gestion reconstruida con nuevas columnas (parent_id, section, type)."}), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": f"Fallo crítico: {str(e)}"}), 500
             
     return app
 
