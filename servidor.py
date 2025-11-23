@@ -1,4 +1,4 @@
-# --- servidor.py --- (v18.9 - MAESTRO FINAL - CON SOPORTE SATÉLITE)
+# --- servidor.py --- (v19.5 - MAESTRO FINAL - CORE + CHAT OCULTO EN OPERACIONES)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -9,11 +9,11 @@ from datetime import timedelta
 import uuid
 import os
 import pickle
+import json 
 from urllib.parse import urlparse, urlunparse
 from sqlalchemy import text
 
 # --- 1. IMPORTAR MODELOS Y DB ---
-# Asegúrate de que models.py esté en la carpeta
 from models import db, User, UserFile, HistoricalLog, IncidentReport, UpdateFile, DocGestion
 
 # --- 2. INICIALIZAR EXTENSIONES ---
@@ -31,7 +31,7 @@ def create_app():
     global db_status
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v18.9 - Core System) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v19.5 - Core + Chat Oculto) <<<")
 
     # --- 5. CONFIGURACIÓN DE APP ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -57,13 +57,12 @@ def create_app():
         db_status = "SQLite (FALLBACK)"
 
     # --- 6. INICIALIZACIÓN DE EXTENSIONES ---
-    # CORS Total para permitir que Servidor 2 se comunique
     cors.init_app(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
     socketio.init_app(app, cors_allowed_origins="*")
     bcrypt.init_app(app)
     db.init_app(app)
 
-    # --- 7. DIRECTORIOS (Si tienes Persistent Storage, cambia BASE_DIR a /data) ---
+    # --- 7. DIRECTORIOS ---
     BASE_DIR = os.getcwd()
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
     AVATARS_FOLDER = os.path.join(UPLOAD_FOLDER, 'avatars')
@@ -108,7 +107,7 @@ def create_app():
     # --- RUTAS PÚBLICAS Y HEALTH CHECK ---
     @app.route('/')
     def health_check():
-        return jsonify({"status": "v18.9 ONLINE (Maestro)", "db": db_status}), 200
+        return jsonify({"status": "v19.5 ONLINE (Maestro)", "db": db_status}), 200
 
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
@@ -232,7 +231,6 @@ def create_app():
                 unique_name = f"avatar_{uuid.uuid4().hex[:8]}_{filename}"
                 save_path = os.path.join(AVATARS_FOLDER, unique_name)
                 file.save(save_path)
-                # Guardamos ruta relativa para que funcione en ambos servidores
                 user.avatar = f"/uploads/avatars/{unique_name}"
 
             db.session.commit()
@@ -317,11 +315,9 @@ def create_app():
             f = UserFile.query.get(file_id)
             if not f: return jsonify({"message": "File not found"}), 404
             
-            # --- BORRADO FÍSICO ---
             if f.storage_path:
                 try: os.remove(os.path.join(UPLOAD_FOLDER, f.storage_path))
                 except: pass
-            # ----------------------
 
             db.session.delete(f); db.session.commit()
             return jsonify({"message": "Eliminado"}), 200
@@ -362,7 +358,7 @@ def create_app():
             db.session.add(new_file); db.session.commit()
             
             return jsonify({"message": "Subido", "newFile": {
-                "id": new_file.id, "name": new_file.name, "type": "file", "parentId": parent_id,
+                "id": new_file.id, "name": new_file.name, "type": "file", "parentId": parent_id, 
                 "size_bytes": file_size, "size": format_file_size(file_size),
                 "isPublished": False, "date": new_file.created_at.strftime('%Y-%m-%d'),
                 "verificationStatus": new_file.verification_status,
@@ -429,98 +425,74 @@ def create_app():
             return jsonify({"authorId": str(author_id)}), 200
         except: return jsonify({"error": "Error"}), 500
 
-    # --- DOCUMENTOS Y LOGS ---
+    # --- DOCUMENTOS Y LOGS (CON CHAT OCULTO) ---
     @app.route('/api/documentos/<section>', methods=['GET'])
     def get_gestion_docs(section):
         try:
+            # MODIFICACIÓN: FILTRAMOS 'chat_data.json' PARA QUE NO SE VEA EN LAS LISTAS
             docs = DocGestion.query.filter_by(section=section).all()
-            return jsonify([
-                {
-                    "id": d.id, 
-                    "name": d.name, 
-                    "size": d.size, 
+            
+            visible_docs = []
+            for d in docs:
+                if d.name == 'chat_data.json': continue # OCULTAR ARCHIVO DE CHAT
+                visible_docs.append({
+                    "id": d.id, "name": d.name, "size": d.size, 
                     "url": get_file_url(os.path.join(section, d.storage_path), 'documentos_gestion') if d.storage_path else None, 
-                    "type": d.type, 
-                    "parent_id": d.parent_id,
+                    "type": d.type, "parent_id": d.parent_id,
                     "date": d.created_at.isoformat() if hasattr(d, 'created_at') else datetime.datetime.utcnow().isoformat()
-                } for d in docs
-            ]), 200
-        except Exception as e:
-            return jsonify([]), 200
+                })
+            return jsonify(visible_docs), 200
+        except: return jsonify([]), 200
 
     @app.route('/api/documentos/upload', methods=['POST'])
     def upload_gestion_doc():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         try:
-            file = request.files['file']
-            section = request.form['section']
-            parent_id = request.form.get('parentId')
-            
-            if parent_id in ['null', 'None', '', 'undefined']: 
-                parent_id = None
-            else:
-                try: parent_id = int(parent_id)
-                except: parent_id = None
-
+            file = request.files['file']; section = request.form['section']; parent_id = request.form.get('parentId')
+            if parent_id in ['null', 'None']: parent_id = None
             filename = secure_filename(file.filename)
-            storage_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+            
+            # Si es el chat, no usar UUID para sobreescribir siempre el mismo
+            if filename == 'chat_data.json': storage_name = filename
+            else: storage_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+            
             save_path = os.path.join(DOCS_FOLDER, section, storage_name)
-            
             os.makedirs(os.path.join(DOCS_FOLDER, section), exist_ok=True)
+            file.save(save_path); file_size = os.path.getsize(save_path)
             
-            file.save(save_path)
-            file_size = os.path.getsize(save_path)
+            # Si es chat, borramos entrada vieja en DB para evitar duplicados visuales (aunque esté oculto)
+            if filename == 'chat_data.json':
+                 old_chat = DocGestion.query.filter_by(name='chat_data.json', section=section).first()
+                 if old_chat: db.session.delete(old_chat)
             
-            new_doc = DocGestion(
-                name=filename, section=section, size=file_size, storage_path=storage_name, 
-                type='file', parent_id=parent_id
-            )
-            db.session.add(new_doc)
-            db.session.commit()
+            new_doc = DocGestion(name=filename, section=section, size=file_size, storage_path=storage_name, type='file', parent_id=parent_id)
+            db.session.add(new_doc); db.session.commit()
             return jsonify({"message": "Subido"}), 201
-        except Exception as e: 
-            return jsonify({"message": str(e)}), 500
+        except Exception as e: return jsonify({"message": str(e)}), 500
 
     @app.route('/api/documentos/create-folder', methods=['POST'])
     def create_gestion_folder():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         try:
-            d = request.get_json()
-            section = d.get('section', 'gestion')
-            parent_id = d.get('parentId')
-            
-            if parent_id in ['null', 'None', '', 'undefined']: 
-                parent_id = None
-            else:
-                try: parent_id = int(parent_id)
-                except: parent_id = None
-
-            new_folder = DocGestion(
-                name=d.get('name'), section=section, type='folder', parent_id=parent_id,
-                size=0, storage_path=None
-            )
-            db.session.add(new_folder)
-            db.session.commit()
+            d = request.get_json(); parent_id = d.get('parentId')
+            if parent_id in ['null', 'None']: parent_id = None
+            new_folder = DocGestion(name=d.get('name'), section=d.get('section', 'gestion'), type='folder', parent_id=parent_id)
+            db.session.add(new_folder); db.session.commit()
             return jsonify({"message": "Carpeta creada"}), 201
-        except Exception as e: 
-            return jsonify({"message": str(e)}), 500
+        except Exception as e: return jsonify({"message": str(e)}), 500
 
     @app.route('/api/documentos/delete/<int:doc_id>', methods=['DELETE'])
     def delete_gestion_doc(doc_id):
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         try:
             doc = DocGestion.query.get(doc_id)
-            if not doc: return jsonify({"message": "No encontrado"}), 404
-
-            if doc.type == 'file' and doc.storage_path:
-                try:
-                    full_path = os.path.join(DOCS_FOLDER, doc.section, doc.storage_path)
-                    if os.path.exists(full_path): os.remove(full_path)
-                except: pass
-            
-            db.session.delete(doc)
-            db.session.commit()
-            return jsonify({"message": "Eliminado"}), 200
+            if doc:
+                if doc.type == 'file' and doc.storage_path:
+                     try: os.remove(os.path.join(DOCS_FOLDER, doc.section, doc.storage_path))
+                     except: pass
+                db.session.delete(doc); db.session.commit()
+                return jsonify({"message": "Eliminado"}), 200
+            return jsonify({"message": "No encontrado"}), 404
         except Exception as e: return jsonify({"message": str(e)}), 500
 
     @app.route('/api/logs/historical', methods=['POST', 'GET'])
@@ -596,20 +568,58 @@ def create_app():
             return jsonify(profile_list), 200
         except: return jsonify([]), 200
 
+    # --- ENDPOINTS ESPECÍFICOS PARA EL CHAT ---
+    @app.route('/api/chat/history', methods=['GET'])
+    def get_chat_history_api():
+        # Busca el archivo chat_data.json en operaciones
+        try:
+            path = os.path.join(DOCS_FOLDER, 'operaciones', 'chat_data.json')
+            if not os.path.exists(path):
+                 # Crea uno vacío si no existe
+                 default = [{"user":"System","msg":"Chat Iniciado","date":datetime.datetime.now().strftime("%H:%M")}]
+                 with open(path, 'w') as f: json.dump(default, f)
+                 return jsonify(default), 200
+            
+            with open(path, 'r') as f: return jsonify(json.load(f)), 200
+        except: return jsonify([]), 200
+
+    @app.route('/api/chat/send', methods=['POST'])
+    def send_chat_msg_api():
+        # Recibe mensaje y lo anexa al archivo
+        try:
+            path = os.path.join(DOCS_FOLDER, 'operaciones', 'chat_data.json')
+            data = request.get_json() # Espera {"user": "X", "msg": "Y"}
+            
+            history = []
+            if os.path.exists(path):
+                with open(path, 'r') as f: history = json.load(f)
+            
+            new_msg = {
+                "user": data.get("user", "Anon"),
+                "msg": data.get("msg", ""),
+                "date": datetime.datetime.now().strftime("%H:%M")
+            }
+            history.append(new_msg)
+            
+            # Mantener solo últimos 50 mensajes
+            if len(history) > 50: history = history[-50:]
+            
+            with open(path, 'w') as f: json.dump(history, f, indent=2)
+            
+            return jsonify({"status": "OK", "history": history}), 200
+        except Exception as e: return jsonify({"error": str(e)}), 500
+
     @app.route('/admin/fix_doc_table', methods=['GET'])
     def fix_doc_table_structure():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: 
             return jsonify({"msg": "Acceso denegado"}), 403
-        
         try:
             with app.app_context():
                 print(">>> BORRANDO TABLA ANTIGUA doc_gestion...")
                 db.session.execute(text('DROP TABLE IF EXISTS doc_gestion CASCADE;'))
                 db.session.commit()
-                
                 print(">>> RECREANDO TABLAS...")
                 db.create_all()
-                
             return jsonify({"message": "ÉXITO: Tabla doc_gestion reconstruida."}), 200
         except Exception as e:
             db.session.rollback()
