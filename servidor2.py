@@ -1,4 +1,4 @@
-# --- servidor2.py (V10.20 - FIX CONEXIÓN & CORS LIMPIO) ---
+# --- servidor2.py (V10.22 - MODO A PRUEBA DE FALLOS) ---
 import os
 import sys
 import io
@@ -6,14 +6,21 @@ import base64
 import pickle
 import traceback
 import numpy as np
-import tensorflow as tf
 from pathlib import Path
 from PIL import Image, ImageFilter, ImageDraw, ImageFont
-from flask import Flask, request, jsonify, redirect
+from flask import Flask, request, jsonify, redirect, make_response
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
 from flask_socketio import SocketIO
 from urllib.parse import urlparse, urlunparse
+
+# --- INTENTO DE CARGA DE TENSORFLOW (CONTROLADO) ---
+try:
+    import tensorflow as tf
+    TF_AVAILABLE = True
+except ImportError:
+    print("!!! ADVERTENCIA: TensorFlow no instalado o falló al cargar.", file=sys.stderr)
+    TF_AVAILABLE = False
 
 # --- CRIPTOGRAFÍA ---
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -22,21 +29,23 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.fernet import Fernet
 
 # --- IMPORTACIÓN DE MODELOS DB ---
-from models import db, User, UserFile, DocGestion
+try:
+    from models import db, User, UserFile, DocGestion
+except ImportError:
+    print("!!! ERROR: models.py no encontrado. El servidor DB fallará.", file=sys.stderr)
+    # Mock para que no crashee al inicio si falta el archivo
+    db = type('Mock', (object,), {'init_app': lambda x: None})
+    User = UserFile = DocGestion = None
 
 app = Flask(__name__)
-
-# CONFIGURACIÓN DE SUBIDA (1 GB Límite)
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024 
 
 # ==============================================================================
-# PARTE 1: CONFIGURACIÓN SATÉLITE Y BASE DE DATOS
+# PARTE 1: CONFIGURACIÓN
 # ==============================================================================
 
 MAESTRO_URL = os.environ.get('MAESTRO_URL', 'https://nano-xtremertx-nano-backend.hf.space')
 if MAESTRO_URL.endswith('/'): MAESTRO_URL = MAESTRO_URL[:-1]
-
-print(f">>> INICIANDO NODO DE IA (SERVIDOR 2) >>> CONECTADO A: {MAESTRO_URL}")
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 NEON_URL = os.environ.get('NEON_URL')
@@ -49,55 +58,76 @@ if NEON_URL:
         if 'postgresql' in clean_url and 'sslmode' not in clean_url:
             clean_url += "?sslmode=require"
         app.config['SQLALCHEMY_DATABASE_URI'] = clean_url
-        print(">>> DB NEON: CONECTADA")
-    except Exception as e:
-        print(f"!!! ERROR DB: {e}")
+    except:
         app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///local_temp.db"
 else:
     app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///local_temp.db"
 
-# --- CORS: CONFIGURACIÓN LIMPIA (Sin duplicados manuales) ---
 CORS(app, resources={r"/*": {"origins": "*"}})
-
 bcrypt = Bcrypt(app)
-db.init_app(app)
+if hasattr(db, 'init_app'): db.init_app(app)
 socketio = SocketIO(app, cors_allowed_origins="*", max_http_buffer_size=1024*1024*1024)
 
 # ==============================================================================
-# PARTE 2: LÓGICA DE IA (Modelos y Reconstrucción)
+# PARTE 2: SISTEMA DE IA (ROBUSTO)
 # ==============================================================================
-
-GENESIS_NAME = 'genesis_decoder_v4.keras'
-ODIN_NAME = 'odin_upscaler_v2.keras'
-GENERALISTA_NAME = 'generalista_hd_best.keras'
-LEXICON_NAME = 'khipu_lexicon.npy'
 
 BASE_DIR = Path("/app")
 MODELS_DIR = BASE_DIR / "xtremertx_ai" / "models"
 MODELS_CACHE = {}
 
-print(f">>> DIRECTORIO DE MODELOS ESPERADO: {MODELS_DIR}", flush=True)
+# Nombres de archivos esperados
+MODELS_CONFIG = {
+    'generalista': 'generalista_hd_best.keras',
+    'genesis': 'genesis_decoder_v4.keras',
+    'odin': 'odin_upscaler_v2.keras',
+    'lexicon': 'khipu_lexicon.npy'
+}
 
-def load_model_server(model_name):
-    if model_name not in MODELS_CACHE:
+def create_error_image(message):
+    """Genera una imagen negra con el texto del error para el frontend."""
+    img = Image.new('RGB', (512, 512), color=(20, 0, 0))
+    d = ImageDraw.Draw(img)
+    try: font = ImageFont.truetype("arial.ttf", 16)
+    except: font = ImageFont.load_default()
+    
+    # Escribir mensaje multilinea
+    y = 200
+    for line in message.split('\n'):
+        d.text((20, y), line, fill=(255, 100, 100), font=font)
+        y += 20
+        
+    d.text((20, 480), "NANO XTREMERTX SYSTEM", fill=(100, 100, 100), font=font)
+    
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+def load_model_server(key):
+    if not TF_AVAILABLE: return None
+    model_name = MODELS_CONFIG.get(key)
+    if not model_name: return None
+    
+    if key not in MODELS_CACHE:
         path = MODELS_DIR / model_name
-        # Búsqueda defensiva por si los modelos están en la raíz
         if not path.exists():
-            print(f"!!! AVISO: Modelo no en {path}, buscando en raíz...", file=sys.stderr)
+            # Fallback a raiz
             path = BASE_DIR / model_name 
             if not path.exists():
-                raise FileNotFoundError(f"Modelo faltante: {model_name}")
+                print(f"!!! MODELO FALTANTE: {model_name}", file=sys.stderr)
+                return None
 
-        print(f">>> CARGANDO MODELO: {model_name}...", flush=True)
+        print(f">>> CARGANDO: {model_name}...", flush=True)
         try:
             if model_name.endswith('.keras'):
-                MODELS_CACHE[model_name] = tf.keras.models.load_model(str(path), compile=False)
+                MODELS_CACHE[key] = tf.keras.models.load_model(str(path), compile=False)
             elif model_name.endswith('.npy'):
-                MODELS_CACHE[model_name] = np.load(path)
+                MODELS_CACHE[key] = np.load(path)
         except Exception as e:
-            raise RuntimeError(f"Modelo corrupto: {e}")
+            print(f"!!! ERROR CARGA MODELO {model_name}: {e}")
+            return None
             
-    return MODELS_CACHE[model_name]
+    return MODELS_CACHE.get(key)
 
 # --- UTILS CRYPTO ---
 def derive_key(password: str, salt: bytes) -> bytes:
@@ -119,102 +149,115 @@ def get_author_fingerprint(data_dict):
         if val and str(val).strip() != "": return str(val)
     return "Desconocido"
 
-# --- MOTOR DE RECONSTRUCCIÓN ---
-def reconstruct_and_degrade(crs_data_bytes: bytes, password: str = None, full_quality: bool = False) -> str:
-    try: crs_data = pickle.loads(crs_data_bytes)
-    except: raise ValueError("El archivo .CRS está dañado o no es válido.")
+# --- MOTOR PRINCIPAL ---
+def process_preview_request(file_bytes, filename, password=None, full_quality=False):
+    filename = filename.lower()
+    author_fingerprint = "N/A"
+    original_image = None
 
-    final_data = crs_data
-    if isinstance(crs_data, dict) and crs_data.get('is_encrypted'):
-        if not password: raise ValueError("ARCHIVO_ENCRIPTADO_REQ_PASS")
-        final_data = decrypt_data(crs_data, password)
+    # A) PROCESAMIENTO CRS (IA)
+    if filename.endswith('.crs'):
+        try: 
+            crs_data = pickle.loads(file_bytes)
+        except: 
+            return create_error_image("ARCHIVO CORRUPTO\nEl archivo no es un CRS válido.")
 
-    author_fingerprint = get_author_fingerprint(final_data)
-    file_version = final_data.get("version", "legacy")
-    shape_data = final_data.get("true_original_shape") or final_data.get("original_shape")
-    
-    if not shape_data: raise ValueError("Datos de forma corruptos.")
-    final_w, final_h = shape_data[:2]
-    final_array = None
+        final_data = crs_data
+        if isinstance(crs_data, dict) and crs_data.get('is_encrypted'):
+            if not password: return create_error_image("ARCHIVO BLOQUEADO\nSe requiere contraseña.")
+            try: final_data = decrypt_data(crs_data, password)
+            except: return create_error_image("ACCESO DENEGADO\nContraseña incorrecta.")
 
-    # Inferencia IA
-    try:
-        if "Generalista" in file_version:
-            generalista_model = load_model_server(GENERALISTA_NAME)
-            core_seed = final_data["core_seed"]
-            fidelity_seed = final_data["fidelity_seed"]
-            
-            enc_out = generalista_model.get_layer('max_pooling2d_2').output.shape[1:]
-            dec_in = tf.keras.Input(shape=enc_out)
-            x = generalista_model.layers[7](dec_in)
-            for i in range(8, len(generalista_model.layers)): x = generalista_model.layers[i](x)
-            decoder_g = tf.keras.models.Model(dec_in, x)
-            
-            rec_norm = decoder_g.predict(core_seed, verbose=0).squeeze()
-            base_pil = Image.fromarray((rec_norm * 255).astype(np.uint8)).resize((final_w, final_h), Image.Resampling.LANCZOS)
-            res_map = np.array(Image.open(io.BytesIO(fidelity_seed))).astype(np.int32) - 128
-            final_array = np.clip(np.array(base_pil).astype(np.int32) + res_map, 0, 255).astype(np.uint8)
-
-        else: 
-            genesis_model = load_model_server(GENESIS_NAME)
-            odin_model = load_model_server(ODIN_NAME)
-            
-            core_seed = final_data["core_seed"]
-            fidelity_seed = final_data["fidelity_seed"]
-            
-            rec_norm = genesis_model.predict(core_seed, verbose=0).squeeze()
-            odin_norm = odin_model.predict(np.expand_dims(rec_norm, axis=0), verbose=0).squeeze()
-            base_pil = Image.fromarray((np.clip(odin_norm,0,1)*255).astype(np.uint8)).resize((final_w, final_h), Image.Resampling.LANCZOS)
-            try: res_map = (np.array(Image.open(io.BytesIO(fidelity_seed)), dtype=np.float32)-128.0)*2.0
-            except: res_map = np.zeros((final_h, final_w), dtype=np.float32)
-            final_array = np.clip(np.array(base_pil) + res_map, 0, 255).astype(np.uint8)
-
-    except Exception as e:
-        print(f"!!! FALLO MOTOR IA: {traceback.format_exc()}", file=sys.stderr)
-        raise RuntimeError(f"Fallo motor IA: {e}")
-
-    if final_array is None: raise ValueError("Error interno: Imagen vacía.")
-
-    # Post-Procesado (Degradación vs Full)
-    try:
-        original_image = Image.fromarray(final_array)
-        w, h = original_image.size
+        author_fingerprint = get_author_fingerprint(final_data)
+        file_version = final_data.get("version", "legacy")
         
+        # Validar datos mínimos
+        shape_data = final_data.get("true_original_shape") or final_data.get("original_shape")
+        if not shape_data: return create_error_image("METADATA ERRÓNEA\nFalta información de forma.")
+        
+        final_w, final_h = shape_data[:2]
+        final_array = None
+
+        # INFERENCIA IA
+        try:
+            if not TF_AVAILABLE:
+                return create_error_image("SERVIDOR IA OFFLINE\nLibrerías no disponibles.")
+
+            if "Generalista" in file_version:
+                model = load_model_server('generalista')
+                if not model: return create_error_image("MODELO NO ENCONTRADO\nEl modelo 'Generalista' falta en el servidor.")
+                
+                rec_norm = model.predict(final_data["core_seed"], verbose=0).squeeze()
+                base_pil = Image.fromarray((rec_norm * 255).astype(np.uint8)).resize((final_w, final_h), Image.Resampling.LANCZOS)
+                res_map = np.array(Image.open(io.BytesIO(final_data["fidelity_seed"]))).astype(np.int32) - 128
+                final_array = np.clip(np.array(base_pil).astype(np.int32) + res_map, 0, 255).astype(np.uint8)
+            else:
+                # Legacy
+                model_g = load_model_server('genesis')
+                model_o = load_model_server('odin')
+                if not model_g or not model_o: return create_error_image("MODELOS LEGACY FALTANTES")
+                
+                rec_norm = model_g.predict(final_data["core_seed"], verbose=0).squeeze()
+                odin_norm = model_o.predict(np.expand_dims(rec_norm, axis=0), verbose=0).squeeze()
+                base_pil = Image.fromarray((np.clip(odin_norm,0,1)*255).astype(np.uint8)).resize((final_w, final_h), Image.Resampling.LANCZOS)
+                try: res_map = (np.array(Image.open(io.BytesIO(final_data["fidelity_seed"])), dtype=np.float32)-128.0)*2.0
+                except: res_map = np.zeros((final_h, final_w), dtype=np.float32)
+                final_array = np.clip(np.array(base_pil) + res_map, 0, 255).astype(np.uint8)
+
+        except Exception as e:
+            print(f"Error Interno IA: {e}")
+            return create_error_image(f"ERROR DE PROCESAMIENTO\n{str(e)[:50]}...")
+
+        if final_array is not None:
+            original_image = Image.fromarray(final_array)
+
+    # B) IMÁGENES ESTÁNDAR (Bypass)
+    elif filename.endswith(('.png', '.jpg', '.jpeg', '.webp')):
+        try:
+            original_image = Image.open(io.BytesIO(file_bytes))
+            if original_image.mode != 'RGB': original_image = original_image.convert('RGB')
+            author_fingerprint = "IMAGEN"
+        except: return create_error_image("FORMATO INVÁLIDO")
+    
+    else:
+        return create_error_image("FORMATO NO SOPORTADO\nUse .CRS, .PNG o .JPG")
+
+    if original_image is None: return create_error_image("ERROR DESCONOCIDO\nNo se generó imagen.")
+
+    # C) RENDERIZADO FINAL (15% vs 100%)
+    try:
+        w, h = original_image.size
         if full_quality:
-            # Si es calidad completa, no redimensionamos pequeño
             final_preview = original_image
-            info_text = f"ID: {author_fingerprint} | CALIDAD ORIGINAL 100%"
+            info_text = f"ID: {author_fingerprint} | CALIDAD: 100%"
         else:
-            # Degradación al 15% (Por defecto para Biblioteca)
+            # Degradación 15%
             target_w, target_h = max(64, int(w * 0.15)), max(64, int(h * 0.15))
             deformed_image = original_image.resize((target_w, target_h), Image.Resampling.BILINEAR)
             final_preview = deformed_image.resize((512, 512), Image.Resampling.BOX)
-            final_preview = final_preview.filter(ImageFilter.GaussianBlur(radius=1.5))
+            final_preview = final_preview.filter(ImageFilter.GaussianBlur(radius=2))
             info_text = f"ID: {author_fingerprint} | PREVIEW 15%"
 
-        # Añadir pie de página con info
-        footer_height = 40
+        # Footer Informativo
         pw, ph = final_preview.size
-        full_preview = Image.new('RGBA', (pw, ph + footer_height), (10, 10, 10, 255))
+        full_preview = Image.new('RGBA', (pw, ph + 40), (10, 10, 10, 255))
         full_preview.paste(final_preview, (0, 0))
         
-        draw = ImageDraw.Draw(full_preview)
+        d = ImageDraw.Draw(full_preview)
         try: font = ImageFont.truetype("arial.ttf", 12)
         except: font = ImageFont.load_default()
         
-        draw.text((10, ph + 12), info_text, font=font, fill=(150, 150, 150))
-        if not full_quality:
-            draw.text((pw - 110, ph + 12), "SOLO LECTURA", font=font, fill=(200, 50, 50))
-
+        d.text((10, ph + 12), info_text, font=font, fill=(150, 150, 150))
+        
         buffer = io.BytesIO()
-        full_preview.save(buffer, format="PNG", optimize=True)
+        full_preview.save(buffer, format="PNG")
         return base64.b64encode(buffer.getvalue()).decode('utf-8')
+
     except Exception as e:
-        print(f"!!! FALLO POST-PROCESADO: {e}", file=sys.stderr)
-        raise RuntimeError("Fallo generando imagen final.")
+        return create_error_image(f"ERROR RENDERIZADO\n{str(e)}")
 
 # ==============================================================================
-# PARTE 3: RUTAS Y ENDPOINTS
+# PARTE 3: RUTAS
 # ==============================================================================
 
 @app.route('/generate-crs-preview', methods=['POST'])
@@ -222,29 +265,22 @@ def handle_preview_generation():
     if 'file' not in request.files: return jsonify({"success": False, "error": "No file"}), 400
     file = request.files['file']
     password = request.form.get('password')
-    
-    # Soporte futuro para pedir 100% (si el frontend envía ?quality=full)
-    # Por ahora el frontend no lo envía, así que full_quality será False (15%)
     is_full_quality = request.args.get('quality') == 'full'
 
-    print(f">>> [IA] PROCESANDO: {file.filename} | FULL_QUALITY: {is_full_quality}", flush=True)
-    
-    if not file.filename.endswith('.crs'): return jsonify({"success": False, "error": "No es .crs"}), 400
+    print(f">>> [REQ] Procesando: {file.filename}", flush=True)
     
     try:
-        # Pasamos el parámetro is_full_quality a la función
-        prev_b64 = reconstruct_and_degrade(file.read(), password, full_quality=is_full_quality)
-        print(">>> [IA] PROCESO OK.", flush=True)
+        # Usamos la función segura que devuelve IMAGEN (aunque sea de error)
+        prev_b64 = process_preview_request(file.read(), file.filename, password, is_full_quality)
         return jsonify({"success": True, "preview_base64": prev_b64}), 200
-    except ValueError as ve:
-        msg = str(ve)
-        if "REQ_PASS" in msg: return jsonify({"success": False, "error": "LOCKED_FILE"}), 401
-        return jsonify({"success": False, "error": msg}), 400
     except Exception as e:
-        print(f"!!! [IA] ERROR CRITICO: {e}", file=sys.stderr)
-        return jsonify({"success": False, "error": f"Error IA: {str(e)}"}), 500
+        # Última red de seguridad
+        print(f"!!! PÁNICO 500: {e}", file=sys.stderr)
+        # Devolver imagen de error generada al vuelo en vez de 500
+        err_img = create_error_image(f"ERROR CRÍTICO SERVIDOR\n{str(e)}")
+        return jsonify({"success": True, "preview_base64": err_img}), 200
 
-# --- SATÉLITE ---
+# --- RUTAS SATÉLITE ---
 @app.route('/uploads/<path:filename>')
 def redirect_uploads(filename): return redirect(f"{MAESTRO_URL}/uploads/{filename}")
 
@@ -257,10 +293,11 @@ def redirect_docs(section, filename): return redirect(f"{MAESTRO_URL}/documentos
 @app.route('/updates/<path:filename>')
 def redirect_updates(filename): return redirect(f"{MAESTRO_URL}/updates/{filename}")
 
-# --- API LECTURA ---
+# --- API ---
 @app.route('/api/my-files/<username>', methods=['GET'])
 def get_files_satellite(username):
     try:
+        if not UserFile: return jsonify([]), 200 # Si falló importación
         files = UserFile.query.filter_by(owner_username=username).all()
         file_list = []
         for f in files:
@@ -277,6 +314,7 @@ def get_files_satellite(username):
 @app.route('/api/biblioteca/public-files', methods=['GET'])
 def get_public_files_satellite():
     try:
+        if not UserFile: return jsonify([]), 200
         files = UserFile.query.filter_by(is_published=True).order_by(UserFile.created_at.desc()).all()
         file_list = []
         for f in files:
@@ -292,6 +330,7 @@ def get_public_files_satellite():
 @app.route('/api/login', methods=['POST'])
 def login():
     d = request.get_json()
+    if not User: return jsonify({"message": "Error DB"}), 500
     u = User.query.filter_by(username=d.get('username')).first()
     if u and bcrypt.check_password_hash(u.hash, d.get('password')):
         avatar_url = u.avatar
@@ -305,13 +344,10 @@ def health(): return "ALIVE", 200
 
 @app.route('/')
 def index():
-    # Chequeo rápido de modelos
-    models_status = "OK" if len(MODELS_CACHE) > 0 else "ESPERANDO (Carga Bajo Demanda)"
     return jsonify({
-        "status": "Servidor 2 (IA + Satélite) ONLINE",
-        "cors_policy": "Abierta (*)",
-        "models_status": models_status,
-        "linked_to": MAESTRO_URL
+        "status": "Servidor 2 (Satélite Blindado) ONLINE",
+        "models": list(MODELS_CACHE.keys()),
+        "tf_available": TF_AVAILABLE
     })
 
 if __name__ == '__main__':
