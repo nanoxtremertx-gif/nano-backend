@@ -1,4 +1,4 @@
-# --- servidor.py --- (v18.6 - MAESTRO PURO - CON SOPORTE GESTIÓN DE CARPETAS)
+# --- servidor.py --- (v18.7 - MAESTRO PURO - CON SOPORTE GESTIÓN DE CARPETAS Y BORRADO FÍSICO)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -30,7 +30,7 @@ def create_app():
     global db_status 
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v18.6 - Core System con Fix DB) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v18.7 - Core System con Fix DB y Borrado Físico) <<<")
 
     # --- 5. CONFIGURACIÓN DE APP ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -101,7 +101,7 @@ def create_app():
     # --- RUTAS PÚBLICAS Y HEALTH CHECK ---
     @app.route('/')
     def health_check(): 
-        return jsonify({"status": "v18.6 ONLINE (Maestro)", "db": db_status}), 200
+        return jsonify({"status": "v18.7 ONLINE (Maestro)", "db": db_status}), 200
 
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
@@ -309,9 +309,13 @@ def create_app():
         try:
             f = UserFile.query.get(file_id)
             if not f: return jsonify({"message": "File not found"}), 404
+            
+            # --- AQUÍ ESTÁ EL CAMBIO PARA ELIMINAR DE RAÍZ ---
             if f.storage_path:
                 try: os.remove(os.path.join(UPLOAD_FOLDER, f.storage_path))
                 except: pass
+            # -------------------------------------------------
+            
             db.session.delete(f); db.session.commit()
             return jsonify({"message": "Eliminado"}), 200
         except Exception as e: return jsonify({"message": f"Error: {str(e)}"}), 500
