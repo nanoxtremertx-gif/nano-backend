@@ -1,4 +1,4 @@
-# --- servidor2.py (V10.25 - MODO FORENSE Y DIAGNÓSTICO TOTAL) ---
+# --- servidor2.py (V10.26 - CORRECCIÓN DE NOMBRES DE ARCHIVO) ---
 import os
 import sys
 import io
@@ -6,7 +6,6 @@ import base64
 import pickle
 import traceback
 import numpy as np
-import glob
 from pathlib import Path
 from PIL import Image, ImageFilter, ImageDraw, ImageFont
 from flask import Flask, request, jsonify, redirect, make_response
@@ -19,7 +18,6 @@ from urllib.parse import urlparse, urlunparse
 try:
     import tensorflow as tf
     TF_AVAILABLE = True
-    print(f">>> TENSORFLOW VERSION: {tf.__version__}", flush=True)
 except ImportError:
     print("!!! TENSORFLOW NO DETECTADO", file=sys.stderr)
     TF_AVAILABLE = False
@@ -47,12 +45,11 @@ app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024
 MAESTRO_URL = os.environ.get('MAESTRO_URL', 'https://nano-xtremertx-nano-backend.hf.space')
 if MAESTRO_URL.endswith('/'): MAESTRO_URL = MAESTRO_URL[:-1]
 
-print(f">>> INICIANDO SERVIDOR 2 (V10.25) FORENSE >>>", flush=True)
+print(f">>> INICIANDO SERVIDOR 2 (V10.26) >>> NOMBRES CORREGIDOS", flush=True)
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 NEON_URL = os.environ.get('NEON_URL')
 
-# DB SETUP (Omitido por brevedad, igual a versiones anteriores)
 if NEON_URL:
     try:
         parsed = urlparse(NEON_URL)
@@ -69,89 +66,32 @@ if hasattr(db, 'init_app'): db.init_app(app)
 socketio = SocketIO(app, cors_allowed_origins="*", max_http_buffer_size=1024*1024*1024)
 
 # ==============================================================================
-# PARTE 2: SISTEMA DE IA (AUDITORÍA DE ARCHIVOS)
+# PARTE 2: SISTEMA DE IA (NOMBRES REALES SEGÚN LOGS)
 # ==============================================================================
 
 BASE_DIR = Path("/app")
 MODELS_DIR = BASE_DIR / "xtremertx_ai" / "models"
 MODELS_CACHE = {}
 
+# ¡AQUÍ ESTABA EL ERROR! AHORA LOS NOMBRES COINCIDEN CON TUS LOGS
 MODELS_CONFIG = {
-    'generalista': 'generalista_hd_best.keras',
-    'genesis': 'genesis_decoder_v4.keras',
-    'odin': 'odin_upscaler_v2.keras',
-    'lexicon': 'khipu_lexicon.npy'
+    'generalista': 'generalista_hd_best.keras',   # Coincide con logs
+    'genesis': 'kiphu_genesis_engine.keras',      # CORREGIDO (antes genesis_decoder_v4)
+    'odin': 'odin_corrector.keras',               # CORREGIDO (antes odin_upscaler_v2)
+    'lexicon': 'khipu_lexicon.npy'                # Coincide con logs
 }
 
-def audit_files():
-    """ESTA FUNCIÓN TE DIRÁ LA VERDAD EN LOS LOGS"""
-    print("="*50, flush=True)
-    print(">>> INICIANDO AUDITORÍA DE ARCHIVOS...", flush=True)
-    print(f">>> BUSCANDO EN: {MODELS_DIR}", flush=True)
-    
-    if not MODELS_DIR.exists():
-        print(f"!!! LA CARPETA NO EXISTE: {MODELS_DIR}", flush=True)
-        print(f">>> CONTENIDO DE /app/xtremertx_ai:", flush=True)
-        try:
-            for f in (BASE_DIR / "xtremertx_ai").glob("*"): print(f" - {f.name}")
-        except: print("No se puede leer /app/xtremertx_ai")
-        return
-
-    files_found = list(MODELS_DIR.glob("*"))
-    print(f">>> ARCHIVOS EN CARPETA MODELS ({len(files_found)}):", flush=True)
-    
-    for f in files_found:
-        size = f.stat().st_size
-        size_str = f"{size} bytes"
-        if size > 1024: size_str = f"{size/1024:.2f} KB"
-        if size > 1024*1024: size_str = f"{size/(1024*1024):.2f} MB"
-        
-        print(f" 📄 {f.name} [{size_str}]", flush=True)
-        
-        # PRUEBA DEL ALGODÓN: SI ES PEQUEÑO, LEEMOS EL CONTENIDO
-        if size < 2000:
-            try:
-                content = f.read_text()
-                print(f"    🔍 CONTENIDO SOSPECHOSO: {content[:100]}", flush=True)
-                if "git-lfs" in content:
-                    print("    🚨 CONFIRMADO: ES UN PUNTERO LFS, NO EL MODELO REAL.", flush=True)
-            except:
-                print("    ❓ No se pudo leer texto (quizás binario corrupto).", flush=True)
-
-    print("="*50, flush=True)
-
-# EJECUTAR AUDITORÍA AL INICIO
-audit_files()
-
 def create_error_image(message):
-    img = Image.new('RGB', (512, 512), color=(0, 0, 0))
+    img = Image.new('RGB', (512, 512), color=(10, 10, 10))
     d = ImageDraw.Draw(img)
     try: font = ImageFont.truetype("arial.ttf", 14)
     except: font = ImageFont.load_default()
     
-    y = 50
-    d.text((20, 20), "DIAGNÓSTICO SERVIDOR IA", fill=(0, 255, 255), font=font)
-    
+    y = 200
     for line in message.split('\n'):
-        d.text((20, y), line, fill=(255, 100, 100), font=font)
+        d.text((20, y), line, fill=(255, 80, 80), font=font)
         y += 20
-    
-    # Listar estado actual
-    y += 30
-    d.text((20, y), "ESTADO DE ARCHIVOS:", fill=(255, 255, 0), font=font)
-    y += 20
-    
-    for name, filename in MODELS_CONFIG.items():
-        path = MODELS_DIR / filename
-        status = "MISSING"
-        if path.exists():
-            size = path.stat().st_size
-            if size < 2000: status = "LFS POINTER (1KB)"
-            else: status = f"OK ({size/(1024*1024):.1f}MB)"
         
-        d.text((20, y), f"- {filename}: {status}", fill=(200, 200, 200), font=font)
-        y += 20
-
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode('utf-8')
@@ -164,17 +104,17 @@ def load_model_server(key):
     if key in MODELS_CACHE: return MODELS_CACHE[key]
 
     path = MODELS_DIR / filename
-    if not path.exists(): return None
     
-    # Si es un puntero, ni intentamos cargarlo con TensorFlow para que no explote
-    if path.stat().st_size < 2000:
-        print(f"!!! SALTANDO CARGA DE {filename} (Es un puntero LFS)", file=sys.stderr)
-        return "LFS_ERROR"
+    if not path.exists():
+        print(f"!!! MODELO FALTANTE: {filename}", file=sys.stderr)
+        return None
 
-    print(f">>> CARGANDO {key.upper()}...", flush=True)
+    print(f">>> CARGANDO {key.upper()} ({filename})...", flush=True)
     try:
-        if filename.endswith('.npy'): MODELS_CACHE[key] = np.load(path)
-        else: MODELS_CACHE[key] = tf.keras.models.load_model(str(path), compile=False)
+        if filename.endswith('.npy'):
+            MODELS_CACHE[key] = np.load(path)
+        else:
+            MODELS_CACHE[key] = tf.keras.models.load_model(str(path), compile=False)
         return MODELS_CACHE[key]
     except Exception as e:
         print(f"!!! ERROR CARGA {filename}: {e}")
@@ -206,9 +146,10 @@ def process_preview_request(file_bytes, filename, password=None, full_quality=Fa
     author_fingerprint = "N/A"
     original_image = None
 
+    # A) PROCESAMIENTO CRS
     if filename.endswith('.crs'):
         try: crs_data = pickle.loads(file_bytes)
-        except: return create_error_image("ARCHIVO CRS CORRUPTO")
+        except: return create_error_image("ARCHIVO CORRUPTO")
 
         final_data = crs_data
         if isinstance(crs_data, dict) and crs_data.get('is_encrypted'):
@@ -222,13 +163,13 @@ def process_preview_request(file_bytes, filename, password=None, full_quality=Fa
         if not shape_data: return create_error_image("METADATA DAÑADA")
         final_w, final_h = shape_data[:2]
         
+        # INFERENCIA
         try:
             if not TF_AVAILABLE: return create_error_image("ERROR: TENSORFLOW NO INSTALADO")
 
             if "Generalista" in file_version:
                 model = load_model_server('generalista')
-                if model == "LFS_ERROR": return create_error_image("ERROR: MODELO GENERALISTA ES UN PUNTERO LFS\n(1KB en vez de 200MB)")
-                if not model: return create_error_image(f"ERROR: MODELO GENERALISTA NO ENCONTRADO\nEn: {MODELS_DIR}")
+                if not model: return create_error_image("FALTA MODELO: GENERALISTA")
                 
                 rec_norm = model.predict(final_data["core_seed"], verbose=0).squeeze()
                 base_pil = Image.fromarray((rec_norm * 255).astype(np.uint8)).resize((final_w, final_h), Image.Resampling.LANCZOS)
@@ -239,11 +180,8 @@ def process_preview_request(file_bytes, filename, password=None, full_quality=Fa
                 model_g = load_model_server('genesis')
                 model_o = load_model_server('odin')
                 
-                if model_g == "LFS_ERROR" or model_o == "LFS_ERROR": 
-                    return create_error_image("ERROR: MODELOS LEGACY SON PUNTEROS LFS\nRevisar Git LFS en Dockerfile.")
-                
-                if not model_g or not model_o: 
-                    return create_error_image(f"ERROR: FALTAN MODELOS LEGACY\nEn: {MODELS_DIR}")
+                if not model_g: return create_error_image("FALTA MODELO: KIPHU GENESIS")
+                if not model_o: return create_error_image("FALTA MODELO: ODIN CORRECTOR")
                 
                 rec_norm = model_g.predict(final_data["core_seed"], verbose=0).squeeze()
                 odin_norm = model_o.predict(np.expand_dims(rec_norm, axis=0), verbose=0).squeeze()
@@ -253,11 +191,12 @@ def process_preview_request(file_bytes, filename, password=None, full_quality=Fa
                 final_array = np.clip(np.array(base_pil) + res_map, 0, 255).astype(np.uint8)
         
         except Exception as e:
-            return create_error_image(f"ERROR INFERENCIA IA:\n{str(e)}")
+            return create_error_image(f"ERROR EJECUCIÓN IA:\n{str(e)}")
 
         if final_array is not None:
             original_image = Image.fromarray(final_array)
 
+    # B) IMAGEN
     elif filename.endswith(('.png', '.jpg', '.jpeg', '.webp')):
         try:
             original_image = Image.open(io.BytesIO(file_bytes))
@@ -268,12 +207,13 @@ def process_preview_request(file_bytes, filename, password=None, full_quality=Fa
 
     if original_image is None: return create_error_image("ERROR DESCONOCIDO")
 
+    # 3. POST-PROCESADO
     try:
+        w, h = original_image.size
         if full_quality:
             final_preview = original_image
             info_text = f"ID: {author_fingerprint} | 100%"
         else:
-            w, h = original_image.size
             target_w, target_h = max(64, int(w * 0.15)), max(64, int(h * 0.15))
             deformed_image = original_image.resize((target_w, target_h), Image.Resampling.BILINEAR)
             final_preview = deformed_image.resize((512, 512), Image.Resampling.BOX)
@@ -284,9 +224,11 @@ def process_preview_request(file_bytes, filename, password=None, full_quality=Fa
         pw, ph = final_preview.size
         full_preview = Image.new('RGBA', (pw, ph + 40), (10, 10, 10, 255))
         full_preview.paste(final_preview, (0, 0))
+        
         d = ImageDraw.Draw(full_preview)
         try: font = ImageFont.truetype("arial.ttf", 12)
         except: font = ImageFont.load_default()
+        
         d.text((10, ph + 12), info_text, font=font, fill=(150, 150, 150))
         if not full_quality:
             d.text((pw - 110, ph + 12), "SOLO LECTURA", font=font, fill=(200, 50, 50))
@@ -297,13 +239,18 @@ def process_preview_request(file_bytes, filename, password=None, full_quality=Fa
 
     except Exception as e: return create_error_image(f"ERROR RENDER: {e}")
 
+# ==============================================================================
+# PARTE 3: RUTAS
+# ==============================================================================
+
 @app.route('/generate-crs-preview', methods=['POST'])
 def handle_preview_generation():
     if 'file' not in request.files: return jsonify({"success": False, "error": "No file"}), 400
     file = request.files['file']
     password = request.form.get('password')
     is_full_quality = request.args.get('quality') == 'full'
-    print(f">>> SOLICITUD: {file.filename}", flush=True)
+
+    print(f">>> [IA] SOLICITUD: {file.filename}", flush=True)
     try:
         prev_b64 = process_preview_request(file.read(), file.filename, password, is_full_quality)
         return jsonify({"success": True, "preview_base64": prev_b64}), 200
@@ -371,9 +318,8 @@ def health(): return "ALIVE", 200
 @app.route('/')
 def index():
     return jsonify({
-        "status": "Servidor 2 FORENSE",
-        "diagnostic": "Revisa los logs de la consola",
-        "tf_available": TF_AVAILABLE
+        "status": "Servidor 2 ONLINE",
+        "models_found": list(MODELS_CACHE.keys())
     })
 
 if __name__ == '__main__':
