@@ -31,7 +31,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 TEMP_INPUT_DIR = BASE_DIR / "temp_in"
 TEMP_OUTPUT_DIR = BASE_DIR / "temp_out"
 
-# Directorios de Inteligencia (Teletransportados por Docker)
+# Directorios de Inteligencia
 ENCODER_DIR = BASE_DIR / "xtremertx_ai"
 MODELS_DIR = ENCODER_DIR / "models"
 
@@ -48,7 +48,6 @@ ENCODER_SCRIPTS = {
 # Verificación de inicio
 if not MODELS_DIR.exists():
     print(f"⚠️  ADVERTENCIA CRÍTICA: No se encuentran los modelos en: {MODELS_DIR}")
-    print("Asegúrate de que Git LFS funcionó en el Dockerfile.")
 
 # ===============================================================
 # 🧠 COMUNICACIÓN CON EL CEREBRO (Srv1)
@@ -68,7 +67,6 @@ def ask_permission(client_id):
             data = resp.json()
             return data.get("allow", False), data.get("reason", "Desconocido")
         elif resp.status_code == 404:
-            # Si Srv1 no tiene la ruta, permitimos por defecto para no romper flujo (opcional)
             return False, "Srv1 no compatible (404)."
         return False, f"Error Srv1: {resp.status_code}"
     except Exception as e:
@@ -149,31 +147,32 @@ def convert_remote():
         base_name = f"{Path(file.filename).stem}_{encoder_type}"
         final_crs = output_dir / f"{base_name}.crs"
         
-        # 4. Configurar Comando (NANO FORZADO)
+        # 4. Configurar Comando (CORREGIDO)
         script = ENCODER_SCRIPTS[encoder_type]
+        
+        # Construimos el comando base con los argumentos que tus encoders SÍ aceptan
         cmd = [
             sys.executable, str(script),
-            str(temp_in), base_name,
+            str(temp_in),               # input_file
+            base_name,                  # output_name
             "--crs_dir", str(output_dir),
             "--models_dir", str(MODELS_DIR),
-            # --- FIRMAS DE AUTORIDAD ---
-            "--author", "NANO",
-            "--fingerprint", "NANO",
-            "--qdna", "NANO"
+            "--author", "NANO"          # Esto establece public_author = NANO
         ]
         
-        # Si es perceptual, forzar calidad 0
+        # Lógica Específica: Perceptual forzado a 0%
         if encoder_type == "perceptual":
             cmd.extend(["--fidelity_quality", "0"])
 
-        print(f"[S4] Ejecutando IA...")
+        print(f"[S4] Ejecutando comando: {' '.join(cmd)}")
         
         # 5. Ejecutar (Timeout 10 min por si acaso)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         
+        # Verificar si falló
         if result.returncode != 0 or not final_crs.exists():
-            print(f"[S4] Error STDERR: {result.stderr[-400:]}")
-            raise Exception("Error crítico en el Encoder de IA.")
+            print(f"[S4] ERROR STDERR DEL ENCODER:\n{result.stderr[-500:]}") # Muestra las ultimas lineas del error
+            raise Exception("El motor de IA falló al procesar la imagen.")
             
         # 6. Entregar al Jefe
         upload_ok = upload_result_to_srv1(username, final_crs)
@@ -205,7 +204,7 @@ def convert_remote():
 
 @app.route("/")
 def home():
-    return "NANO WORKER S4 (ONLINE)", 200
+    return "NANO WORKER S4 (READY)", 200
 
 # ===============================================================
 # 🚀 MAIN (Puerto 7860 para HF)
