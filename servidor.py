@@ -1,4 +1,4 @@
-# --- servidor.py --- (v21.0 - FIX CONEXIÓN NEON DB)
+# --- servidor.py --- (v22.0 - FIX VISIBILIDAD Y CANAL VERDE)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -31,21 +31,19 @@ def create_app():
     global db_status
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v21.0 - Anti-Disconnect) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v22.0 - Fix Visibilidad) <<<")
 
     # --- 5. CONFIGURACIÓN DE APP ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     
-    # --- ¡¡CORRECCIÓN VITAL!! MOTOR DE BASE DE DATOS ---
-    # Esto evita que Neon cierre la conexión inesperadamente
+    # MOTOR DB NEON (Anti-Disconnect)
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        "pool_pre_ping": True,  # Verifica la conexión antes de usarla
-        "pool_recycle": 300,    # Recicla conexiones cada 5 minutos
-        "pool_timeout": 30,     # Espera máx 30s por una conexión
-        "pool_size": 10,        # Mantener 10 conexiones abiertas
-        "max_overflow": 20      # Permitir 20 extra si hay mucho tráfico
+        "pool_pre_ping": True,
+        "pool_recycle": 300,
+        "pool_timeout": 30,
+        "pool_size": 10,
+        "max_overflow": 20
     }
-    # --------------------------------------------------
 
     try:
         raw_url = os.environ.get('NEON_URL')
@@ -120,7 +118,7 @@ def create_app():
     # --- RUTAS PÚBLICAS Y HEALTH CHECK ---
     @app.route('/')
     def health_check():
-        return jsonify({"status": "v21.0 ONLINE (Maestro)", "db": db_status}), 200
+        return jsonify({"status": "v22.0 ONLINE (Maestro)", "db": db_status}), 200
 
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
@@ -294,7 +292,7 @@ def create_app():
             
         return jsonify({"count": len(active_list), "users": active_list}), 200
 
-    # --- ADMIN / ARCHIVOS / GESTION (Rutas estándar) ---
+    # --- ADMIN / ARCHIVOS / GESTION ---
     @app.route('/api/admin/users', methods=['GET'])
     def admin_list():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
@@ -354,18 +352,29 @@ def create_app():
             return jsonify(file_list), 200
         except: return jsonify([]), 200
 
+    # --- ENDPOINT PRINCIPAL DE SUBIDA (MODIFICADO PARA ORPHANS) ---
     @app.route('/api/upload-file', methods=['POST'])
     def upload_user_file():
         try:
             if 'file' not in request.files: return jsonify({"message": "Falta archivo"}), 400
             file = request.files['file']; user_id = request.form.get('userId')
-            parent_id = request.form.get('parentId'); verification_status = request.form.get('verificationStatus', 'N/A')
+            parent_id = request.form.get('parentId')
+            verification_status = request.form.get('verificationStatus', 'N/A')
             
             filename = secure_filename(file.filename); unique_name = f"{uuid.uuid4().hex[:8]}_{filename}"
             save_path = os.path.join(UPLOAD_FOLDER, unique_name)
             file.save(save_path); file_size = os.path.getsize(save_path)
             
-            if parent_id == 'null' or parent_id == 'undefined': parent_id = None
+            # --- LÓGICA ANTI-HUÉRFANOS ---
+            # Si S4 manda "null" o no manda nada, buscamos la carpeta raíz del usuario
+            if parent_id == 'null' or parent_id == 'undefined' or not parent_id:
+                root_folder = UserFile.query.filter_by(owner_username=user_id, parent_id=None, type='folder').first()
+                if root_folder:
+                    parent_id = root_folder.id
+                else:
+                    # Si el usuario no tiene carpeta raíz (raro), lo dejamos en None (root)
+                    parent_id = None
+            # -----------------------------
             
             new_file = UserFile(owner_username=user_id, name=filename, type='file', parent_id=parent_id, size_bytes=file_size, storage_path=unique_name, verification_status=verification_status)
             db.session.add(new_file); db.session.commit()
@@ -423,7 +432,6 @@ def create_app():
             return jsonify({"msg": "404"}), 404
         except Exception as e: return jsonify({"message": str(e)}), 500
 
-    # --- INSPECCIÓN BÁSICA DE AUTOR ---
     @app.route('/get-crs-author', methods=['POST'])
     def inspect_crs_author():
         try:
@@ -438,16 +446,13 @@ def create_app():
             return jsonify({"authorId": str(author_id)}), 200
         except: return jsonify({"error": "Error"}), 500
 
-    # --- DOCUMENTOS Y LOGS (CON CHAT OCULTO) ---
     @app.route('/api/documentos/<section>', methods=['GET'])
     def get_gestion_docs(section):
         try:
-            # MODIFICACIÓN: FILTRAMOS 'chat_data.json' PARA QUE NO SE VEA EN LAS LISTAS
             docs = DocGestion.query.filter_by(section=section).all()
-            
             visible_docs = []
             for d in docs:
-                if d.name == 'chat_data.json': continue # OCULTAR ARCHIVO DE CHAT
+                if d.name == 'chat_data.json': continue 
                 visible_docs.append({
                     "id": d.id, "name": d.name, "size": d.size, 
                     "url": get_file_url(os.path.join(section, d.storage_path), 'documentos_gestion') if d.storage_path else None, 
@@ -464,20 +469,14 @@ def create_app():
             file = request.files['file']; section = request.form['section']; parent_id = request.form.get('parentId')
             if parent_id in ['null', 'None']: parent_id = None
             filename = secure_filename(file.filename)
-            
-            # Si es el chat, no usar UUID para sobreescribir siempre el mismo
             if filename == 'chat_data.json': storage_name = filename
             else: storage_name = f"{uuid.uuid4().hex[:8]}_{filename}"
-            
             save_path = os.path.join(DOCS_FOLDER, section, storage_name)
             os.makedirs(os.path.join(DOCS_FOLDER, section), exist_ok=True)
             file.save(save_path); file_size = os.path.getsize(save_path)
-            
-            # Si es chat, borramos entrada vieja en DB para evitar duplicados visuales (aunque esté oculto)
             if filename == 'chat_data.json':
                  old_chat = DocGestion.query.filter_by(name='chat_data.json', section=section).first()
                  if old_chat: db.session.delete(old_chat)
-            
             new_doc = DocGestion(name=filename, section=section, size=file_size, storage_path=storage_name, type='file', parent_id=parent_id)
             db.session.add(new_doc); db.session.commit()
             return jsonify({"message": "Subido"}), 201
@@ -581,57 +580,39 @@ def create_app():
             return jsonify(profile_list), 200
         except: return jsonify([]), 200
 
-    # --- ENDPOINTS ESPECÍFICOS PARA EL CHAT ---
     @app.route('/api/chat/history', methods=['GET'])
     def get_chat_history_api():
-        # Busca el archivo chat_data.json en operaciones
         try:
             path = os.path.join(DOCS_FOLDER, 'operaciones', 'chat_data.json')
             if not os.path.exists(path):
-                 # Crea uno vacío si no existe
                  default = [{"user":"System","msg":"Chat Iniciado","date":datetime.datetime.now().strftime("%H:%M")}]
                  with open(path, 'w') as f: json.dump(default, f)
                  return jsonify(default), 200
-            
             with open(path, 'r') as f: return jsonify(json.load(f)), 200
         except: return jsonify([]), 200
 
     @app.route('/api/chat/send', methods=['POST'])
     def send_chat_msg_api():
-        # Recibe mensaje y lo anexa al archivo
         try:
             path = os.path.join(DOCS_FOLDER, 'operaciones', 'chat_data.json')
-            data = request.get_json() # Espera {"user": "X", "msg": "Y"}
-            
+            data = request.get_json()
             history = []
             if os.path.exists(path):
                 with open(path, 'r') as f: history = json.load(f)
-            
-            new_msg = {
-                "user": data.get("user", "Anon"),
-                "msg": data.get("msg", ""),
-                "date": datetime.datetime.now().strftime("%H:%M")
-            }
+            new_msg = {"user": data.get("user", "Anon"), "msg": data.get("msg", ""), "date": datetime.datetime.now().strftime("%H:%M")}
             history.append(new_msg)
-            
-            # Mantener solo últimos 50 mensajes
             if len(history) > 50: history = history[-50:]
-            
             with open(path, 'w') as f: json.dump(history, f, indent=2)
-            
             return jsonify({"status": "OK", "history": history}), 200
         except Exception as e: return jsonify({"error": str(e)}), 500
 
     @app.route('/admin/fix_doc_table', methods=['GET'])
     def fix_doc_table_structure():
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: 
-            return jsonify({"msg": "Acceso denegado"}), 403
+        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         try:
             with app.app_context():
-                print(">>> BORRANDO TABLA ANTIGUA doc_gestion...")
                 db.session.execute(text('DROP TABLE IF EXISTS doc_gestion CASCADE;'))
                 db.session.commit()
-                print(">>> RECREANDO TABLAS...")
                 db.create_all()
             return jsonify({"message": "ÉXITO: Tabla doc_gestion reconstruida."}), 200
         except Exception as e:
@@ -639,7 +620,7 @@ def create_app():
             return jsonify({"error": f"Fallo crítico: {str(e)}"}), 500
     
     # ===============================================================
-    # 🔗 ZONA DE INTEGRACIÓN CON SERVIDOR 4 (WORKER)
+    # 🔗 ZONA DE INTEGRACIÓN WORKER (S4)
     # ===============================================================
     CONVERSION_RECORDS_FILE = os.path.join(BASE_DIR, 'server_conversion_records.json')
 
@@ -656,55 +637,34 @@ def create_app():
 
     @app.route('/api/worker/check-permission', methods=['POST'])
     def worker_check_permission():
-        """Srv4 pregunta si el usuario puede convertir."""
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"allow": False, "reason": "Auth Fail"}), 403
-        
         data = request.get_json()
         client_id = data.get('singleUseClientId')
         cooldown_hours = 48
-        
         records = load_conversion_records()
-        user_records = sorted(
-            [r for r in records if r.get("singleUseClientId") == client_id],
-            key=lambda x: x["timestamp"], reverse=True
-        )
-
+        user_records = sorted([r for r in records if r.get("singleUseClientId") == client_id], key=lambda x: x["timestamp"], reverse=True)
         if not user_records: return jsonify({"allow": True}), 200
-
         try:
-            last_time_str = user_records[0]["timestamp"].replace("Z", "")
-            last_time = datetime.datetime.fromisoformat(last_time_str)
+            last_time = datetime.datetime.fromisoformat(user_records[0]["timestamp"].replace("Z", ""))
             unlock_time = last_time + timedelta(hours=cooldown_hours)
-            
             if datetime.datetime.utcnow() < unlock_time:
                 remaining = str(unlock_time - datetime.datetime.utcnow()).split('.')[0]
                 return jsonify({"allow": False, "reason": f"Cooldown activo. Espera: {remaining}"}), 200
-        except:
-            # Si hay error en la fecha, dejar pasar por si acaso
-            return jsonify({"allow": True}), 200
-            
+        except: return jsonify({"allow": True}), 200
         return jsonify({"allow": True}), 200
 
     @app.route('/api/worker/log-success', methods=['POST'])
     def worker_log_success():
-        """Srv4 reporta que terminó y entregó un archivo."""
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"status": "Fail"}), 403
-        
-        new_record = request.get_json() # Srv4 nos manda el objeto record completo
+        new_record = request.get_json()
         records = load_conversion_records()
         records.append(new_record)
-        
-        # Mantenemos el log limpio (últimos 1000 registros)
         if len(records) > 1000: records = records[-1000:]
-        
         save_conversion_records(records)
         return jsonify({"status": "Recorded"}), 201
 
-    # --- NUEVO ENDPOINT: LEER HISTORIAL PARA EL FRONTEND ---
     @app.route('/api/worker/records', methods=['GET'])
     def get_worker_records():
-        """Devuelve el historial de conversiones."""
-        # Se permite público porque es solo un log histórico para el admin panel
         return jsonify({"records": load_conversion_records()}), 200
 
     return app
