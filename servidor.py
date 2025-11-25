@@ -1,4 +1,4 @@
-# --- servidor.py --- (v20.0 - MAESTRO FINAL + INTEGRACIÓN WORKER S4)
+# --- servidor.py --- (v21.0 - FIX CONEXIÓN NEON DB)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -23,7 +23,7 @@ socketio = SocketIO()
 
 # --- 3. Memoria RAM (Global) ---
 ONLINE_USERS = {}
-ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" # <--- CLAVE MAESTRA COMPARTIDA CON S4
+ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
 db_status = "Desconocido"
 
 # --- 4. DEFINIR LA FÁBRICA DE LA APLICACIÓN ---
@@ -31,14 +31,25 @@ def create_app():
     global db_status
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v20.0 - Con Integración S4) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v21.0 - Anti-Disconnect) <<<")
 
     # --- 5. CONFIGURACIÓN DE APP ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    
+    # --- ¡¡CORRECCIÓN VITAL!! MOTOR DE BASE DE DATOS ---
+    # Esto evita que Neon cierre la conexión inesperadamente
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        "pool_pre_ping": True,  # Verifica la conexión antes de usarla
+        "pool_recycle": 300,    # Recicla conexiones cada 5 minutos
+        "pool_timeout": 30,     # Espera máx 30s por una conexión
+        "pool_size": 10,        # Mantener 10 conexiones abiertas
+        "max_overflow": 20      # Permitir 20 extra si hay mucho tráfico
+    }
+    # --------------------------------------------------
+
     try:
         raw_url = os.environ.get('NEON_URL')
         if not raw_url:
-            # Fallback para local o si no hay variable de entorno
             print("⚠️ NEON_URL no encontrada. Usando SQLite local.")
             app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///local_fallback.db"
             db_status = "SQLite (Local)"
@@ -109,7 +120,7 @@ def create_app():
     # --- RUTAS PÚBLICAS Y HEALTH CHECK ---
     @app.route('/')
     def health_check():
-        return jsonify({"status": "v20.0 ONLINE (Maestro)", "db": db_status}), 200
+        return jsonify({"status": "v21.0 ONLINE (Maestro)", "db": db_status}), 200
 
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
@@ -688,6 +699,13 @@ def create_app():
         
         save_conversion_records(records)
         return jsonify({"status": "Recorded"}), 201
+
+    # --- NUEVO ENDPOINT: LEER HISTORIAL PARA EL FRONTEND ---
+    @app.route('/api/worker/records', methods=['GET'])
+    def get_worker_records():
+        """Devuelve el historial de conversiones."""
+        # Se permite público porque es solo un log histórico para el admin panel
+        return jsonify({"records": load_conversion_records()}), 200
 
     return app
 
