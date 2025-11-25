@@ -1,4 +1,4 @@
-# servidor4.py (v6.0 - PROGRESO REAL + LOGS COMPLETOS)
+# servidor4.py (v6.1 - Fix DB String Length)
 import os
 import sys
 import json
@@ -43,7 +43,6 @@ ENCODER_SCRIPTS = {
 }
 
 # --- MEMORIA DE TRABAJOS (JOBS) ---
-# Aquí guardamos el estado de cada conversión en tiempo real
 JOBS = {} 
 
 def ask_permission(client_id):
@@ -61,7 +60,17 @@ def upload_to_srv1(username, file_path):
     if not file_path.exists(): return False, "Archivo no existe"
     try:
         url = f"{SRV1_URL.rstrip('/')}/api/upload-file"
-        payload = {"userId": username, "parentId": "null", "verificationStatus": "verified_nano_quantum"}
+        
+        # --- ¡CORRECCIÓN AQUÍ! ---
+        # Antes: "verified_nano_quantum" (21 chars) -> Error DB
+        # Ahora: "verified_quantum" (16 chars) -> OK
+        payload = {
+            "userId": username,
+            "parentId": "null", 
+            "verificationStatus": "verified_quantum" 
+        }
+        # -------------------------
+
         with open(file_path, 'rb') as f:
             files = {'file': (file_path.name, f, 'application/octet-stream')}
             resp = requests.post(url, data=payload, files=files, timeout=300)
@@ -69,7 +78,6 @@ def upload_to_srv1(username, file_path):
     except Exception as e: return False, str(e)
 
 def report_log_final(record):
-    """Envía el log histórico completo a Srv1."""
     try:
         url = f"{SRV1_URL.rstrip('/')}/api/worker/log-success"
         headers = {"X-Admin-Key": SRV1_MASTER_KEY}
@@ -83,7 +91,7 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
     job['progress'] = 0
     start_time = time.time()
     
-    temp_in = Path(file_path) # Ya viene guardado
+    temp_in = Path(file_path)
     output_dir = Path(tempfile.mkdtemp(dir=TEMP_OUTPUT_DIR))
     
     try:
@@ -101,8 +109,7 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
         ]
         if encoder_type == "perceptual": cmd.extend(["--fidelity_quality", "0"])
 
-        # 2. EJECUTAR Y LEER PROGRESO REAL (PIPE)
-        # Esto lee lo que imprime el encoder: "PROGRESS:10", "PROGRESS:50", etc.
+        # 2. EJECUTAR Y LEER PROGRESO
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
         
         while True:
@@ -110,20 +117,18 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
             if not line and process.poll() is not None: break
             if line:
                 line = line.strip()
-                # Detectamos la marca de tus encoders
                 if line.startswith("PROGRESS:"):
                     try:
                         p = int(line.split(":")[1])
-                        # Escalamos el progreso (0-90% es encoder, 90-100% es subida)
                         job['progress'] = int(p * 0.9) 
                     except: pass
-                print(f"[JOB {job_id}] {line}") # Debug en consola HF
+                print(f"[JOB {job_id}] {line}") 
 
         if process.returncode != 0 or not final_crs.exists():
             stderr = process.stderr.read()
             raise Exception(f"Fallo Encoder: {stderr[-200:]}")
 
-        # 3. SUBIDA AL MAESTRO (90% -> 100%)
+        # 3. SUBIDA AL MAESTRO
         job['progress'] = 95
         input_size_mb = temp_in.stat().st_size / (1024*1024)
         final_size_mb = final_crs.stat().st_size / (1024*1024)
@@ -134,12 +139,9 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
         # 4. DATOS FINALES
         end_time = time.time()
         exec_time_sec = end_time - start_time
-        
-        # Formato de tiempo "MM:SS"
         mins, secs = divmod(int(exec_time_sec), 60)
         time_str = f"{mins:02d}:{secs:02d}"
 
-        # LOG COMPLETO
         full_record = {
             "id": job_id,
             "username": username,
@@ -154,7 +156,7 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
             "output_size_mb": f"{final_size_mb:.2f}",
             "original_filename": temp_in.name,
             "final_filename": final_crs.name,
-            "singleUseClientId": client_id # Para el cooldown
+            "singleUseClientId": client_id
         }
         
         report_log_final(full_record)
@@ -169,17 +171,14 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
         job['error'] = str(e)
     
     finally:
-        # Limpieza
         try:
             if temp_in.exists(): os.remove(temp_in)
             shutil.rmtree(output_dir, ignore_errors=True)
         except: pass
 
-# --- RUTAS DE LA API ---
-
+# --- RUTAS API ---
 @app.route("/convert/start", methods=["POST"])
 def start_conversion():
-    """Paso 1: Sube archivo e inicia proceso en segundo plano."""
     if "file" not in request.files: return jsonify({"error": "No file"}), 400
     file = request.files["file"]
     
@@ -189,17 +188,14 @@ def start_conversion():
     encoder_type = request.form.get("encoderType", "perceptual")
     user_role = request.form.get("userRole", "user")
     location = request.form.get("location", "Desconocido")
-    user_ip = request.form.get("userIp", "0.0.0.0") # Viene del frontend
+    user_ip = request.form.get("userIp", "0.0.0.0")
 
-    # Cooldown Check
     allowed, reason = ask_permission(client_id)
     if not allowed: return jsonify({"success": False, "error": reason}), 429
 
-    # Guardar archivo temporal
     temp_path = Path(tempfile.mkdtemp(dir=TEMP_INPUT_DIR)) / file.filename
     file.save(temp_path)
 
-    # Iniciar Hilo
     JOBS[job_id] = {'status': 'pending', 'progress': 0}
     thread = threading.Thread(target=run_encoder_job, args=(
         job_id, temp_path, encoder_type, username, client_id, user_role, location, user_ip
@@ -210,13 +206,12 @@ def start_conversion():
 
 @app.route("/convert/status/<job_id>", methods=["GET"])
 def check_status(job_id):
-    """Paso 2: Polling para ver el progreso real."""
     job = JOBS.get(job_id)
     if not job: return jsonify({"error": "Job not found"}), 404
     return jsonify(job), 200
 
 @app.route("/")
-def home(): return "S4 REAL-TIME WORKER (V6.0)", 200
+def home(): return "S4 REAL-TIME WORKER (V6.1 - FIX DB)", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=7860)
