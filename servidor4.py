@@ -1,4 +1,4 @@
-# servidor4.py (v7.0 - AUTORÍA DINÁMICA DE USUARIO)
+# servidor4.py (v7.1 - FIX TIMEOUT / COLD START)
 import os
 import sys
 import json
@@ -50,7 +50,10 @@ def ask_permission(client_id):
         url = f"{SRV1_URL.rstrip('/')}/api/worker/check-permission"
         headers = {"X-Admin-Key": SRV1_MASTER_KEY}
         payload = {"singleUseClientId": client_id}
-        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        
+        # --- CAMBIO: Timeout aumentado a 60s para esperar a que S1 despierte ---
+        resp = requests.post(url, json=payload, headers=headers, timeout=60)
+        
         if resp.status_code == 200:
             return resp.json().get("allow", False), resp.json().get("reason", "Unknown")
         return False, f"Error Srv1 ({resp.status_code})"
@@ -61,18 +64,16 @@ def upload_to_srv1(username, file_path):
     try:
         url = f"{SRV1_URL.rstrip('/')}/api/upload-file"
         
-        # --- ¡CAMBIO DE ESTRATEGIA! ---
-        # 1. El archivo lleva la firma del usuario (fingerprint).
-        # 2. Aquí le decimos a S1 que ya fue verificado cuánticamente.
         payload = {
             "userId": username,
             "parentId": "null", 
-            "verificationStatus": "verified_quantum", # Check Verde automático
-            "description": "Generado por NANO CRS (Web Creator)" # Marca de origen
+            "verificationStatus": "verified_quantum",
+            "description": "Generado por NANO CRS (Web Creator)"
         }
 
         with open(file_path, 'rb') as f:
             files = {'file': (file_path.name, f, 'application/octet-stream')}
+            # Subida de archivos mantiene timeout largo (5 min)
             resp = requests.post(url, data=payload, files=files, timeout=300)
         return (True, "OK") if 200 <= resp.status_code < 300 else (False, resp.text)
     except Exception as e: return False, str(e)
@@ -81,7 +82,8 @@ def report_log_final(record):
     try:
         url = f"{SRV1_URL.rstrip('/')}/api/worker/log-success"
         headers = {"X-Admin-Key": SRV1_MASTER_KEY}
-        requests.post(url, json=record, headers=headers, timeout=10)
+        # --- CAMBIO: Timeout aumentado a 60s ---
+        requests.post(url, json=record, headers=headers, timeout=60)
     except: pass
 
 # --- HILO DE TRABAJO (WORKER THREAD) ---
@@ -100,10 +102,6 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
         final_crs = output_dir / f"{base_name}.crs"
         script = ENCODER_SCRIPTS[encoder_type]
         
-        # --- ¡LA MAGIA ESTÁ AQUÍ! ---
-        # Usamos 'username' en el --author.
-        # Esto hace que el Q-DNA (Lentes) sea igual al usuario logueado.
-        # Resultado: El archivo es "propiedad verificada" del usuario.
         cmd = [
             sys.executable, str(script),
             str(temp_in), base_name,
@@ -195,6 +193,7 @@ def start_conversion():
     location = request.form.get("location", "Desconocido")
     user_ip = request.form.get("userIp", "0.0.0.0")
 
+    # Pedimos permiso con el nuevo timeout de 60s
     allowed, reason = ask_permission(client_id)
     if not allowed: return jsonify({"success": False, "error": reason}), 429
 
@@ -216,7 +215,7 @@ def check_status(job_id):
     return jsonify(job), 200
 
 @app.route("/")
-def home(): return "S4 WORKER (V7.0 - USER FINGERPRINT)", 200
+def home(): return "S4 WORKER (V7.1 - TIMEOUT FIX)", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=7860)
