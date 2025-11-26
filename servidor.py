@@ -1,675 +1,452 @@
-# --- servidor.py --- (v22.0 - MAESTRO FINAL UNIFICADO: CORE + CHAT + WORKER S4)
-from flask import Flask, jsonify, request, send_from_directory
-from flask_socketio import SocketIO, emit
-from flask_cors import CORS
-from flask_bcrypt import Bcrypt
-from werkzeug.utils import secure_filename
-import datetime
-from datetime import timedelta
-import uuid
+# coo.py (v25.0 - NANO COO SUITE - FULL ACCESS)
+# ROL: Chief Operating Officer
+# ACTUALIZACIÓN: 
+# - Integración total de "X-Admin-Key" en todas las consultas para ver datos ocultos.
+# - Sistema Heartbeat activo para aparecer Online.
+# - Chat Global enlazado.
+
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog, scrolledtext, filedialog
+import requests
+import json
+import threading
+import time
 import os
-import pickle
-import json 
-from urllib.parse import urlparse, urlunparse
-from sqlalchemy import text
+from datetime import datetime
+import calendar
+from pathlib import Path
 
-# --- 1. IMPORTAR MODELOS Y DB ---
-from models import db, User, UserFile, HistoricalLog, IncidentReport, UpdateFile, DocGestion
+# --- CONFIGURACIÓN ---
+API_URL = "https://nano-xtremertx-nano-backend.hf.space"
+ADMIN_BACKEND_KEY = "NANO_MASTER_KEY_2025" # <--- ESTA LLAVE ABRE TODAS LAS PUERTAS
+ADMIN_LOCAL_KEY = "121351" 
+HEADERS = {"X-Admin-Key": ADMIN_BACKEND_KEY}
 
-# --- 2. INICIALIZAR EXTENSIONES ---
-cors = CORS()
-bcrypt = Bcrypt()
-socketio = SocketIO()
+# --- COLORES DARK TECH ---
+C_BG = "#0a0a0a"       
+C_PANEL = "#161b22"    
+C_HEADER = "#0d1117"   
+C_ACCENT = "#00BFFF"   # Cyan
+C_GREEN = "#238636"    # Verde
+C_RED = "#da3633"      # Rojo
+C_YELLOW = "#facc15"   # Amarillo
+C_TEXT = "#e6edf3"     
+C_MUTED = "#8b949e"    
 
-# --- 3. Memoria RAM (Global) ---
-ONLINE_USERS = {}
-ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025"
-db_status = "Desconocido"
+# --- UTILIDADES ---
+def format_date(iso):
+    try: return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime('%d/%m %H:%M') if iso else "N/A"
+    except: return "N/A"
 
-# --- 4. DEFINIR LA FÁBRICA DE LA APLICACIÓN ---
-def create_app():
-    global db_status
-    
-    app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v22.0 - Full Integration) <<<")
+def check_auth(title, cb):
+    if simpledialog.askstring("Seguridad", f"🔑 Clave para: {title}", show='*') == ADMIN_LOCAL_KEY: cb()
+    else: messagebox.showerror("Error", "Clave Incorrecta")
 
-    # --- 5. CONFIGURACIÓN DE APP ---
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    
-    # OPTIMIZACIÓN DB NEON (Anti-Disconnect)
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        "pool_pre_ping": True,
-        "pool_recycle": 300,
-        "pool_timeout": 30,
-        "pool_size": 10,
-        "max_overflow": 20
-    }
-
-    try:
-        raw_url = os.environ.get('NEON_URL')
-        if not raw_url:
-            raise ValueError("NEON_URL no encontrada.")
+# ==========================================================
+# 💬 SISTEMA DE CHAT
+# ==========================================================
+class ChatManager:
+    def __init__(self, app, user_id="COO"):
+        self.app = app; self.user = user_id; self.messages = []; self.running = True
         
-        parsed = urlparse(raw_url)
-        scheme = 'postgresql' if parsed.scheme == 'postgres' else parsed.scheme
-        clean_url = urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).strip("'").strip()
-        if 'postgresql' in clean_url and 'sslmode' not in clean_url:
-            clean_url += "?sslmode=require"
+    def start_sync(self):
+        def loop():
+            while self.running:
+                try:
+                    # La Key permite leer el historial aunque esté en carpeta privada
+                    r = requests.get(f"{API_URL}/api/chat/history", headers=HEADERS, timeout=5)
+                    if r.ok:
+                        new_data = r.json()
+                        if len(new_data) != len(self.messages):
+                            self.messages = new_data
+                            if hasattr(self.app, 'chat_window') and self.app.chat_window.winfo_exists():
+                                self.app.after(0, self.app.render_chat_window)
+                except: pass
+                time.sleep(3) 
+        threading.Thread(target=loop, daemon=True).start()
+
+    def send(self, msg):
+        threading.Thread(target=lambda: requests.post(f"{API_URL}/api/chat/send", json={"user": self.user, "msg": msg}, headers=HEADERS), daemon=True).start()
+
+# ==========================================================
+# 📱 CLASE PRINCIPAL: COO APP
+# ==========================================================
+class COOMasterApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("NANO COO v25.0 [Admin Mode]")
+        self.geometry("380x720")
+        self.resizable(False, False)
+        self.configure(bg=C_BG)
+
+        self.chat_sys = ChatManager(self, "COO")
+        self.current_view = "inicio"
+        self.current_frame = None
+        self.dock_btns = {}
         
-        app.config['SQLALCHEMY_DATABASE_URI'] = clean_url
-        db_status = "Neon PostgreSQL (REAL)"
-        print(f"Base de datos configurada: {db_status}")
+        # Datos
+        self.metrics = {
+            'logs': 0, 'reports': 0, 'updates': 0, 'active_users': 0, 'operationFiles': 0,
+            'mockLogData': [], 'mockIncidentData': [], 'mockUpdateData': [], 'mockOperationFiles': []
+        }
+        self.solved_incidents = set()
+        self.current_dir = None 
 
-    except Exception as e:
-        print(f"!!! ERROR CRÍTICO AL CONFIGURAR DB: {e}")
-        print("!!! USANDO SQLITE COMO FALLBACK.")
-        app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
-        db_status = "SQLite (FALLBACK)"
-
-    # --- 6. INICIALIZACIÓN DE EXTENSIONES ---
-    cors.init_app(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
-    socketio.init_app(app, cors_allowed_origins="*")
-    bcrypt.init_app(app)
-    db.init_app(app) 
-
-    # --- 7. DIRECTORIOS ---
-    BASE_DIR = os.getcwd()
-    UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
-    AVATARS_FOLDER = os.path.join(UPLOAD_FOLDER, 'avatars')
-    LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')
-    UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates')
-    INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')
-    DOCS_FOLDER = os.path.join(BASE_DIR, 'documentos_gestion')
-    BIBLIOTECA_PUBLIC_FOLDER = os.path.join(BASE_DIR, 'biblioteca_publica') 
-
-    # Crear carpetas
-    for folder in [UPLOAD_FOLDER, AVATARS_FOLDER, LOGS_FOLDER, UPDATES_FOLDER, INCIDENTS_FOLDER, DOCS_FOLDER, BIBLIOTECA_PUBLIC_FOLDER]:
-        os.makedirs(folder, exist_ok=True)
-
-    SUB_DOC_FOLDERS = ['desarrollo', 'gestion', 'operaciones']
-    for sub in SUB_DOC_FOLDERS:
-        os.makedirs(os.path.join(DOCS_FOLDER, sub), exist_ok=True)
-
-    # --- Funciones Helper ---
-    def emit_online_count():
-        try:
-            count = len(ONLINE_USERS)
-            socketio.emit('update_online_count', {'count': count})
-        except Exception as e:
-            print(f"Error al emitir conteo: {e}")
-
-    def get_file_url(filename, folder_route='uploads'):
-        if not filename: return None
-        return f"{request.host_url}{folder_route}/{filename}"
-
-    def format_file_size(size_bytes):
-        if size_bytes is None: return "N/A" 
-        if size_bytes < 1024: return f"{size_bytes} Bytes"
-        if size_bytes < 1048576: return f"{size_bytes / 1024:.1f} KB"
-        elif size_bytes < 1073741824: return f"{size_bytes / 1048576:.2f} MB"
-        else: return f"{size_bytes / 1073741824:.2f} GB"
-
-    # --- RUTA PARA UPTIMEROBOT (LIGERA) ---
-    @app.route('/health')
-    def health_check_uptime():
-        return "ALIVE", 200
-
-    # --- RUTAS PÚBLICAS Y HEALTH CHECK ---
-    @app.route('/')
-    def health_check(): 
-        return jsonify({"status": "v22.0 ONLINE (Maestro)", "db": db_status}), 200
-
-    @app.route('/uploads/<path:filename>')
-    def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
-    @app.route('/uploads/avatars/<path:filename>')
-    def download_avatar(filename): return send_from_directory(AVATARS_FOLDER, filename)
-    @app.route('/logs_historical/<path:filename>')
-    def download_log_file(filename): return send_from_directory(LOGS_FOLDER, filename)
-    @app.route('/logs_incidents/<path:filename>')
-    def download_incident_file(filename): return send_from_directory(INCIDENTS_FOLDER, filename)
-    @app.route('/updates/<path:filename>')
-    def download_update_file(filename): return send_from_directory(UPDATES_FOLDER, filename)
-    @app.route('/documentos_gestion/<path:section>/<path:filename>')
-    def download_doc_gestion(section, filename): 
-        if section not in SUB_DOC_FOLDERS: return jsonify({"msg": "Sección inválida"}), 400
-        return send_from_directory(os.path.join(DOCS_FOLDER, section), filename)
-    @app.route('/biblioteca_publica/<path:filename>')
-    def download_biblioteca_file(filename): 
-        return send_from_directory(BIBLIOTECA_PUBLIC_FOLDER, filename)
-    
-    @app.route('/admin/create_tables', methods=['GET'])
-    def create_tables():
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY:
-            return jsonify({"msg": "Acceso denegado"}), 403
-        try:
-            with app.app_context():
-                db.create_all()
-            return jsonify({"message": "Tablas creadas (o ya existían)."}), 200
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-
-    # --- SOCKETS ---
-    @socketio.on('connect')
-    def handle_connect():
-        emit('update_online_count', {'count': len(ONLINE_USERS)})
-
-    @socketio.on('disconnect')
-    def handle_disconnect():
-        pass
-
-    # --- AUTH ---
-    @app.route('/api/register', methods=['POST'])
-    def register():
-        d = request.get_json()
-        if User.query.filter_by(username=d.get('username')).first(): return jsonify({"message": "Usuario ocupado"}), 409
-        if User.query.filter_by(email=d.get('email')).first(): return jsonify({"message": "Email ocupado"}), 409
+        self.setup_ui()
         
-        new_user = User(
-            username=d.get('username'), 
-            hash=bcrypt.generate_password_hash(d.get('password')).decode('utf-8'), 
-            email=d.get('email'), 
-            identificador=d.get('identificador'), 
-            role="gratis", 
-            fingerprint=d.get('username').lower(),
-            display_name=d.get('username').capitalize(),
-            bio="Nuevo usuario en Nano Xtreme",
-            avatar="/user.ico"
-        )
+        # INICIO SECUENCIAL PARA GARANTIZAR CONEXIÓN
+        self.start_heartbeat()     # 1. Avisar presencia
+        self.chat_sys.start_sync() # 2. Conectar Chat
+        self.after(1000, self.refresh_all_data) # 3. Descargar datos seguros
+
+    def setup_ui(self):
+        s = ttk.Style(); s.theme_use("clam")
+        s.configure("Treeview", background=C_PANEL, foreground=C_TEXT, fieldbackground=C_PANEL, borderwidth=0, rowheight=35, font=("Segoe UI", 9))
+        s.configure("Treeview.Heading", background=C_HEADER, foreground=C_ACCENT, font=("Segoe UI", 9, "bold"), borderwidth=0)
+        s.map("Treeview", background=[("selected", "#2a2a2a")], foreground=[("selected", "white")])
         
-        try:
-            db.session.add(new_user)
-            db.session.commit()
+        # Estilo Barra de Progreso
+        s.configure("Horizontal.TProgressbar", background=C_GREEN, troughcolor=C_PANEL, bordercolor=C_BG, lightcolor=C_GREEN, darkcolor=C_GREEN)
+
+        self.header = tk.Frame(self, bg=C_HEADER, height=50); self.header.pack(fill=tk.X, side=tk.TOP)
+        self.lbl_title = tk.Label(self.header, text="COO SUITE", bg=C_HEADER, fg=C_ACCENT, font=("Segoe UI", 12, "bold")); self.lbl_title.pack(pady=12)
+
+        self.dock = tk.Frame(self, bg=C_HEADER, height=60); self.dock.pack(fill=tk.X, side=tk.BOTTOM); self.dock.pack_propagate(0)
+        self.container = tk.Frame(self, bg=C_BG); self.container.pack(fill=tk.BOTH, expand=True)
+
+        btns = [("inicio", "🏠", "Inicio"), ("diag", "🩺", "Diagnóstico"), ("ops", "⚙️", "Ops")]
+        for k, i, t in btns:
+            b = tk.Label(self.dock, text=f"{i}\n{t}", bg=C_HEADER, fg=C_MUTED, cursor="hand2", font=("Segoe UI", 8))
+            b.bind("<Button-1>", lambda e, v=k: self.switch_view(v))
+            b.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            self.dock_btns[k] = b
             
-            new_folder = UserFile(owner_username=d.get('username'), name="Archivos de Usuario", type='folder', parent_id=None, size_bytes=0, verification_status='N/A')
-            db.session.add(new_folder)
-            db.session.commit()
+        self.switch_view("inicio")
 
-            ONLINE_USERS[d.get('username')] = datetime.datetime.utcnow()
-            emit_online_count()
-            return jsonify({"message": "Registrado"}), 201
-            
-        except Exception as e: 
-            db.session.rollback()
-            return jsonify({"message": f"Error de BD: {str(e)}"}), 500
-
-    @app.route('/api/login', methods=['POST'])
-    def login():
-        d = request.get_json()
-        u = User.query.filter_by(username=d.get('username')).first()
+    def switch_view(self, view):
+        self.current_view = view
+        if self.current_frame: self.current_frame.destroy()
+        for k, b in self.dock_btns.items(): b.config(fg=C_ACCENT if k==view else C_MUTED)
         
-        if u and bcrypt.check_password_hash(u.hash, d.get('password')):
-            try:
-                root_folder = UserFile.query.filter_by(owner_username=u.username, parent_id=None, name="Archivos de Usuario").first()
-                if not root_folder:
-                    new_root = UserFile(owner_username=u.username, name="Archivos de Usuario", type='folder', parent_id=None, size_bytes=0, verification_status='N/A')
-                    db.session.add(new_root); db.session.commit()
-            except Exception as e:
-                db.session.rollback(); print(f"Error carpeta raíz: {e}")
+        if view == "inicio": self.build_inicio()
+        elif view == "diag": self.build_diag()
+        elif view == "ops": self.build_ops()
+        self.current_frame.pack(fill=tk.BOTH, expand=True)
 
-            ONLINE_USERS[u.username] = datetime.datetime.utcnow()
-            emit_online_count()
-            
-            return jsonify({
-                "message": "OK", 
-                "user": {
-                    "username": u.username, "email": u.email, "role": u.role, "identificador": u.identificador, "isAdmin": u.role == 'admin',
-                    "displayName": getattr(u, 'display_name', u.username),
-                    "bio": getattr(u, 'bio', ''),
-                    "avatar": getattr(u, 'avatar', '/user.ico')
-                }
-            }), 200
-            
-        return jsonify({"message": "Credenciales inválidas"}), 401
+    def refresh_all_data(self):
+        threading.Thread(target=self.fetch_metrics_thread, daemon=True).start()
 
-    @app.route('/api/update-profile', methods=['POST'])
-    def update_profile():
-        try:
-            username = request.form.get('username')
-            display_name = request.form.get('displayName')
-            bio = request.form.get('bio')
-            file = request.files.get('avatar')
+    def fetch_metrics_thread(self):
+        def get(url): 
+            try: 
+                # IMPORTANTE: Enviamos HEADERS con la Key Maestra
+                r = requests.get(f"{API_URL}{url}", headers=HEADERS, timeout=10)
+                return r.json() if r.status_code==200 else []
+            except: return []
 
-            if not username: return jsonify({"success": False, "message": "Username requerido"}), 400
-            user = User.query.filter_by(username=username).first()
-            if not user: return jsonify({"success": False, "message": "Usuario no encontrado"}), 404
+        logs = get("/api/logs/historical")
+        incs = get("/api/logs/incidents")
+        ups = get("/api/updates/list")
+        users = get("/api/online-users")
+        ops = get("/api/documentos/operaciones")
 
-            if display_name: user.display_name = display_name
-            if bio: user.bio = bio
-
-            if file:
-                filename = secure_filename(file.filename)
-                unique_name = f"avatar_{uuid.uuid4().hex[:8]}_{filename}"
-                save_path = os.path.join(AVATARS_FOLDER, unique_name)
-                file.save(save_path)
-                user.avatar = f"/uploads/avatars/{unique_name}"
-
-            db.session.commit()
-
-            return jsonify({
-                "success": True,
-                "updatedUser": {
-                    "username": user.username, "email": user.email, "role": user.role, "identificador": user.identificador,
-                    "displayName": user.display_name, "bio": user.bio, "avatar": user.avatar
-                }
-            }), 200
-
-        except Exception as e:
-            db.session.rollback()
-            return jsonify({"success": False, "message": str(e)}), 500
-
-    @app.route('/api/heartbeat', methods=['POST'])
-    def heartbeat():
-        d = request.get_json(); username = d.get('username')
-        if username: ONLINE_USERS[username] = datetime.datetime.utcnow(); return jsonify({"status": "alive"}), 200
-        return jsonify({"msg": "No user"}), 400
-
-    @app.route('/api/logout-signal', methods=['POST'])
-    def logout_signal():
-        username = None
-        try:
-            d = request.get_json(silent=True)
-            if d: username = d.get('username')
-            else: username = request.form.get('username')
-        except: pass
-        if username and username in ONLINE_USERS:
-            del ONLINE_USERS[username]
-            emit_online_count()
-            return jsonify({"status": "disconnected"}), 200
-        return jsonify({"status": "ignored"}), 200
-
-    @app.route('/api/online-users', methods=['GET'])
-    def get_online_users():
-        now = datetime.datetime.utcnow(); limit = now - timedelta(seconds=45)
-        active_list = []; users_to_remove = []
-        for user, last_time in ONLINE_USERS.items():
-            if last_time > limit: active_list.append({"username": user, "last_seen": last_time.isoformat()})
-            else: users_to_remove.append(user)
+        self.metrics['logs'] = len(logs); self.metrics['mockLogData'] = logs
         
-        if len(users_to_remove) > 0:
-            for u in users_to_remove: del ONLINE_USERS[u]
-            emit_online_count()
-            
-        return jsonify({"count": len(active_list), "users": active_list}), 200
-
-    # --- ADMIN / ARCHIVOS / GESTION ---
-    @app.route('/api/admin/users', methods=['GET'])
-    def admin_list():
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
-        try:
-            users = User.query.all(); user_list = []
-            for u in users: user_list.append({"username": u.username, "email": u.email, "role": u.role, "identificador": u.identificador, "subscriptionEndDate": u.subscription_end})
-            return jsonify(user_list), 200
-        except Exception as e: return jsonify({"error": str(e)}), 500
-
-    @app.route('/api/admin/users/<username>', methods=['PUT', 'DELETE'])
-    def admin_modify(username):
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "No"}), 403
-        u = User.query.filter_by(username=username).first()
-        if not u: return jsonify({"msg": "404"}), 404
-        
-        if request.method == 'PUT':
-            d = request.get_json()
-            if 'role' in d: u.role = d['role']
-            if 'subscriptionEndDate' in d: u.subscription_end = d['subscriptionEndDate']
-            db.session.commit(); return jsonify({"message": "Actualizado"}), 200
-        
-        if request.method == 'DELETE':
-            db.session.delete(u); db.session.commit()
-            if username in ONLINE_USERS: del ONLINE_USERS[username]
-            return jsonify({"message": "Eliminado"}), 200
-
-    @app.route('/api/admin/delete-public-file/<file_id>', methods=['DELETE'])
-    def admin_delete_public_file(file_id):
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
-        try:
-            f = UserFile.query.get(file_id)
-            if not f: return jsonify({"message": "File not found"}), 404
-            
-            if f.storage_path:
-                try: os.remove(os.path.join(UPLOAD_FOLDER, f.storage_path))
+        # Detectar resueltos
+        for l in logs:
+            if l and isinstance(l, dict) and "RESPUESTA_INCIDENTE_" in l.get('quality', ''):
+                try: self.solved_incidents.add(int(l['quality'].split('_')[-1]))
                 except: pass
 
-            db.session.delete(f); db.session.commit()
-            return jsonify({"message": "Eliminado"}), 200
-        except Exception as e: return jsonify({"message": f"Error: {str(e)}"}), 500
+        pendientes = [i for i in incs if i.get('id') not in self.solved_incidents]
 
-    @app.route('/api/my-files/<username>', methods=['GET'])
-    def get_files(username):
-        try:
-            files = UserFile.query.filter_by(owner_username=username).all()
-            file_list = []
-            for f in files:
-                file_list.append({
-                    "id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id,
-                    "size_bytes": f.size_bytes, "size": format_file_size(f.size_bytes),
-                    "path": get_file_url(f.storage_path, 'uploads'),
-                    "isPublished": f.is_published, "date": f.created_at.strftime('%Y-%m-%d'),
-                    "verificationStatus": f.verification_status,
-                    "monetization": {"enabled": f.price > 0, "price": f.price},
-                    "description": f.description, "tags": f.tags.split(',') if f.tags else []
-                })
-            return jsonify(file_list), 200
-        except: return jsonify([]), 200
+        self.metrics['reports'] = len(pendientes)
+        self.metrics['mockIncidentData'] = incs
+        self.metrics['updates'] = len(ups); self.metrics['mockUpdateData'] = ups
+        self.metrics['active_users'] = users.get('count', 0) if isinstance(users, dict) else 0
+        
+        # Filtro solo PDFs/Carpetas para contador
+        self.metrics['mockOperationFiles'] = ops if isinstance(ops, list) else []
+        valid_files = [f for f in self.metrics['mockOperationFiles'] if f.get('type')=='folder' or f.get('name','').lower().endswith('.pdf')]
+        self.metrics['operationFiles'] = len(valid_files)
 
-    @app.route('/api/upload-file', methods=['POST'])
-    def upload_user_file():
-        try:
-            if 'file' not in request.files: return jsonify({"message": "Falta archivo"}), 400
-            file = request.files['file']; user_id = request.form.get('userId')
-            parent_id = request.form.get('parentId'); verification_status = request.form.get('verificationStatus', 'N/A')
-            
-            filename = secure_filename(file.filename); unique_name = f"{uuid.uuid4().hex[:8]}_{filename}"
-            save_path = os.path.join(UPLOAD_FOLDER, unique_name)
-            file.save(save_path); file_size = os.path.getsize(save_path)
-            
-            # Lógica Anti-Huérfanos (S4)
-            if parent_id == 'null' or parent_id == 'undefined' or not parent_id:
-                root_folder = UserFile.query.filter_by(owner_username=user_id, parent_id=None, type='folder').first()
-                parent_id = root_folder.id if root_folder else None
-            
-            new_file = UserFile(owner_username=user_id, name=filename, type='file', parent_id=parent_id, size_bytes=file_size, storage_path=unique_name, verification_status=verification_status)
-            db.session.add(new_file); db.session.commit()
-            
-            return jsonify({"message": "Subido", "newFile": {
-                "id": new_file.id, "name": new_file.name, "type": "file", "parentId": parent_id, 
-                "size_bytes": file_size, "size": format_file_size(file_size),
-                "isPublished": False, "date": new_file.created_at.strftime('%Y-%m-%d'),
-                "verificationStatus": new_file.verification_status,
-                "path": get_file_url(new_file.storage_path, 'uploads'),
-                "monetization": {"enabled": False, "price": 0.0}, "description": "", "tags": []
-            }}), 201
-        except Exception as e: return jsonify({"message": str(e)}), 500
+        if self.current_view == "inicio": self.after(0, self.safe_refresh_dashboard)
+        if self.current_view == "ops": self.after(0, self.render_ops_list)
 
-    @app.route('/api/create-folder', methods=['POST'])
-    def create_folder():
-        try:
-            d = request.get_json(); parent_id = d.get('parentId')
-            if parent_id == 'root' or not parent_id:
-                root_folder = UserFile.query.filter_by(owner_username=d.get('userId'), parent_id=None, name="Archivos de Usuario").first()
-                parent_id = root_folder.id if root_folder else None
-            nf = UserFile(owner_username=d.get('userId'), name=d.get('name'), type='folder', parent_id=parent_id, size_bytes=0, verification_status='N/A')
-            db.session.add(nf); db.session.commit()
-            return jsonify({"newFolder": {"id": nf.id, "name": nf.name, "type": "folder", "parentId": nf.parent_id}}), 201
-        except Exception as e: return jsonify({"message": str(e)}), 500
+    def start_heartbeat(self):
+        def loop():
+            while True:
+                try: requests.post(f"{API_URL}/api/heartbeat", json={"username": "COO_Console"}, timeout=5)
+                except: pass
+                time.sleep(30)
+        threading.Thread(target=loop, daemon=True).start()
 
-    @app.route('/api/delete-file', methods=['DELETE'])
-    def delete_f():
-        try: 
-            d = request.get_json(); f = UserFile.query.get(d.get('fileId'))
-            if f: 
-                if f.type == 'file' and f.storage_path:
-                    try:
-                        file_path = os.path.join(UPLOAD_FOLDER, f.storage_path)
-                        if os.path.exists(file_path): os.remove(file_path)
-                    except: pass
-                db.session.delete(f); db.session.commit()
-                return jsonify({"message": "Deleted"}), 200
-            return jsonify({"message": "File not found"}), 404
-        except: db.session.rollback(); return jsonify({"message": "Error"}), 500
-
-    @app.route('/api/update-file', methods=['POST'])
-    def upd_file():
-        try: 
-            d = request.get_json(); f = UserFile.query.get(d.get('fileId'))
-            if f: 
-                u = d.get('updates', {})
-                if 'name' in u: f.name = u['name']
-                if 'isPublished' in u: f.is_published = u['isPublished']
-                if 'description' in u: f.description = u['description']
-                if 'tags' in u: f.tags = ",".join(u['tags'])
-                if 'monetization' in u: f.price = float(u['monetization'].get('price', 0.0)) if u['monetization'].get('enabled', False) else 0.0
-                db.session.commit()
-                return jsonify({"updatedFile": { "id": f.id, "name": f.name }}), 200
-            return jsonify({"msg": "404"}), 404
-        except Exception as e: return jsonify({"message": str(e)}), 500
-
-    # --- INSPECCIÓN BÁSICA DE AUTOR ---
-    @app.route('/get-crs-author', methods=['POST'])
-    def inspect_crs_author():
-        try:
-            file = request.files['file']; temp_path = os.path.join(UPLOAD_FOLDER, f"temp_{uuid.uuid4().hex}.crs"); file.save(temp_path)
-            author_id = "N/A"
+    def api_req(self, end, cb, method='GET', data=None, files=None):
+        def run():
             try:
-                with open(temp_path, 'rb') as f: data = pickle.load(f)
-                author_id = data.get('public_author', 'N/A')
-            except: pass
-            finally:
-                if os.path.exists(temp_path): os.remove(temp_path)
-            return jsonify({"authorId": str(author_id)}), 200
-        except: return jsonify({"error": "Error"}), 500
+                h = HEADERS.copy()
+                if files and 'Content-Type' in h: del h['Content-Type']
+                r = requests.request(method, f"{API_URL}{end}", headers=h, data=(json.dumps(data) if data and not files else None) if not files else data, files=files)
+                if r.ok: self.after(0, lambda: cb(r.json() if r.text else {}))
+                else: self.after(0, lambda: cb(None))
+            except: self.after(0, lambda: cb(None))
+        threading.Thread(target=run, daemon=True).start()
 
-    # --- DOCUMENTOS Y LOGS (CON CHAT OCULTO) ---
-    @app.route('/api/documentos/<section>', methods=['GET'])
-    def get_gestion_docs(section):
-        try:
-            docs = DocGestion.query.filter_by(section=section).all()
-            visible_docs = []
-            for d in docs:
-                if d.name == 'chat_data.json': continue 
-                visible_docs.append({
-                    "id": d.id, "name": d.name, "size": d.size, 
-                    "url": get_file_url(os.path.join(section, d.storage_path), 'documentos_gestion') if d.storage_path else None, 
-                    "type": d.type, "parent_id": d.parent_id,
-                    "date": d.created_at.isoformat() if hasattr(d, 'created_at') else datetime.datetime.utcnow().isoformat()
-                })
-            return jsonify(visible_docs), 200
-        except: return jsonify([]), 200
+    # ==========================================================
+    # 🏠 VISTA 1: INICIO (DISEÑO CFO + CHAT)
+    # ==========================================================
+    def build_inicio(self):
+        self.lbl_title.config(text="PANEL OPERATIVO", fg=C_ACCENT)
+        f = tk.Frame(self.container, bg=C_BG); self.current_frame = f
+        
+        canvas = tk.Canvas(f, bg=C_BG, bd=0, highlightthickness=0); 
+        scrollbar = ttk.Scrollbar(f, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=C_BG)
+        
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw", width=360) 
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
 
-    @app.route('/api/documentos/upload', methods=['POST'])
-    def upload_gestion_doc():
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
-        try:
-            file = request.files['file']; section = request.form['section']; parent_id = request.form.get('parentId')
-            if parent_id in ['null', 'None']: parent_id = None
-            filename = secure_filename(file.filename)
+        # BIG NUMBER
+        self.lbl_big_num = tk.Label(scrollable_frame, text="...", bg=C_BG, fg=C_RED, font=("Segoe UI", 28, "bold"))
+        tk.Label(scrollable_frame, text="INCIDENTES ACTIVOS", bg=C_BG, fg=C_MUTED, font=("Segoe UI", 8)).pack(pady=(20,0))
+        self.lbl_big_num.pack(pady=(0, 20))
+
+        # CARDS
+        grid = tk.Frame(scrollable_frame, bg=C_BG); grid.pack(fill=tk.X, padx=10)
+        grid.columnconfigure(0, weight=1); grid.columnconfigure(1, weight=1)
+        
+        def card(r, c, t, v, col):
+            fr = tk.Frame(grid, bg=C_PANEL, padx=10, pady=10)
+            fr.grid(row=r, column=c, sticky="nsew", padx=5, pady=5)
+            tk.Label(fr, text=t, bg=C_PANEL, fg=C_MUTED, font=("Segoe UI", 7, "bold")).pack(anchor="w")
+            lbl = tk.Label(fr, text=str(v), bg=C_PANEL, fg=col, font=("Segoe UI", 14, "bold"))
+            lbl.pack(anchor="e")
+            return lbl
+
+        self.lbl_users = card(0, 0, "USUARIOS ONLINE", "...", C_GREEN)
+        self.lbl_files = card(0, 1, "ARCHIVOS OPS", "...", C_YELLOW)
+        self.lbl_logs = card(1, 0, "LOGS TOTALES", "...", C_TEXT)
+        self.lbl_patches = card(1, 1, "PARCHES", "...", C_ACCENT)
+
+        # BOTONES
+        btn_f = tk.Frame(scrollable_frame, bg=C_BG); btn_f.pack(fill=tk.X, pady=20, padx=15)
+        tk.Button(btn_f, text="💬 CHAT EJECUTIVO", command=self.open_chat_window, bg=C_PANEL, fg=C_YELLOW, bd=0, font=("Segoe UI", 10, "bold"), pady=10).pack(fill=tk.X, pady=5)
+        tk.Button(btn_f, text="⟳ Sincronizar Datos", command=self.refresh_all_data, bg=C_PANEL, fg=C_TEXT, bd=0, font=("Segoe UI", 9)).pack(fill=tk.X)
+
+        self.safe_refresh_dashboard()
+
+    def safe_refresh_dashboard(self):
+        if self.current_view == "inicio" and hasattr(self, 'lbl_big_num'):
+            n = self.metrics['reports']
+            color = C_RED if n > 0 else C_GREEN
+            self.lbl_big_num.config(text=str(n), fg=color)
+            self.lbl_users.config(text=str(self.metrics['active_users']))
+            self.lbl_files.config(text=str(self.metrics['operationFiles']))
+            self.lbl_logs.config(text=str(self.metrics['logs']))
+            self.lbl_patches.config(text=str(self.metrics['updates']))
+
+    # --- CHAT POPUP ---
+    def open_chat_window(self):
+        top = tk.Toplevel(self); top.title("Chat Ejecutivo"); top.geometry("380x600"); top.configure(bg=C_BG)
+        tk.Label(top, text="MURO DE COMUNICACIÓN", bg=C_HEADER, fg=C_ACCENT, font=("Segoe UI", 12, "bold"), pady=10).pack(fill=tk.X)
+        self.chat_window = scrolledtext.ScrolledText(top, bg=C_PANEL, fg="white", font=("Segoe UI", 9), bd=0, padx=10, pady=10)
+        self.chat_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.render_chat_window()
+        
+        ifrm = tk.Frame(top, bg=C_PANEL, padx=10, pady=10); ifrm.pack(fill=tk.X)
+        ent = tk.Entry(ifrm, bg=C_BG, fg="white", insertbackground="white", relief="flat")
+        ent.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=5)
+        
+        def send():
+            m = ent.get().strip()
+            if m: self.chat_sys.send(m); ent.delete(0, tk.END); self.chat_window.config(state='normal'); self.chat_window.insert(tk.END, "> Enviando...\n", "temp"); self.chat_window.config(state='disabled')
+        
+        ent.bind("<Return>", lambda e: send())
+        tk.Button(ifrm, text="➤", command=send, bg=C_GREEN, fg="white", bd=0, width=4).pack(side=tk.RIGHT, padx=(5,0))
+
+    def render_chat_window(self):
+        if not hasattr(self, 'chat_window') or not self.chat_window.winfo_exists(): return
+        self.chat_window.config(state='normal'); self.chat_window.delete(1.0, tk.END)
+        for m in self.chat_sys.messages[-30:]:
+            user = m.get('user','Anon')
+            col = C_ACCENT if user=="COO" else (C_YELLOW if user=="CTO" else C_GREEN)
+            self.chat_window.insert(tk.END, f"[{m.get('date')}] {user}: ", "meta")
+            self.chat_window.insert(tk.END, f"{m.get('msg')}\n\n", "text")
+            self.chat_window.tag_config("meta", foreground=col, font=("Segoe UI", 8, "bold"))
+            self.chat_window.tag_config("text", foreground="white")
+        self.chat_window.see(tk.END); self.chat_window.config(state='disabled')
+
+    # ==========================================================
+    # 🩺 VISTA 2: DIAGNÓSTICO (AVANZADO)
+    # ==========================================================
+    def build_diag(self):
+        self.lbl_title.config(text="DIAGNÓSTICO", fg=C_RED)
+        f = tk.Frame(self.container, bg=C_BG); self.current_frame = f
+        scroll = tk.Frame(f, bg=C_BG); scroll.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+
+        def admin_btn(title, icon, count, color, cmd):
+            btn = tk.Frame(scroll, bg=C_PANEL, pady=15, padx=15); btn.pack(fill=tk.X, pady=8)
+            tk.Label(btn, text=icon, bg=C_PANEL, fg=color, font=("Segoe UI", 20)).pack(side=tk.LEFT)
+            info = tk.Frame(btn, bg=C_PANEL); info.pack(side=tk.LEFT, padx=15)
+            tk.Label(info, text=title, bg=C_PANEL, fg="white", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+            tk.Label(info, text=f"{count} registros", bg=C_PANEL, fg=C_MUTED, font=("Segoe UI", 9)).pack(anchor="w")
+            tk.Button(btn, text="ABRIR", command=cmd, bg=C_BG, fg=color, bd=0, font=("Segoe UI", 9, "bold")).pack(side=tk.RIGHT)
+
+        admin_btn("LOGS HISTÓRICOS", "📜", self.metrics['logs'], C_ACCENT, self.show_logs_window)
+        admin_btn("INCIDENTES", "⚠️", self.metrics['reports'], C_RED, self.show_incidents_window)
+        admin_btn("ACTUALIZACIONES", "🚀", self.metrics['updates'], C_YELLOW, self.show_updates_window)
+
+    # --- LOGS: DESCARGAR ---
+    def show_logs_window(self):
+        top = tk.Toplevel(self); top.title("Logs Históricos"); top.geometry("400x600"); top.configure(bg=C_BG)
+        tree = ttk.Treeview(top, columns=("User","IP","Date"), show="headings"); tree.pack(fill=tk.BOTH, expand=True)
+        for c in ["User","IP","Date"]: tree.heading(c, text=c)
+        for d in self.metrics['mockLogData']: 
+            if d and isinstance(d, dict):
+                tree.insert("", "end", iid=d.get('id',0), values=(d.get('user'), d.get('ip','N/A'), format_date(d.get('date'))))
+        
+        def download_log():
+            sel = tree.selection(); 
+            if not sel: return
+            item = next((x for x in self.metrics['mockLogData'] if str(x.get('id'))==sel[0]), None)
+            if item and item.get('filename'): 
+                self.download_file_real(f"/logs_historical/{item['filename']}", item['filename'])
             
-            if filename == 'chat_data.json': storage_name = filename
-            else: storage_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+        tk.Button(top, text="📥 DESCARGAR LOG", command=download_log, bg=C_ACCENT, fg="black").pack(fill=tk.X, pady=10)
+
+    # --- INCIDENTES: DESCARGAR Y RESPONDER ---
+    def show_incidents_window(self):
+        top = tk.Toplevel(self); top.title("Incidentes"); top.geometry("450x650"); top.configure(bg=C_BG)
+        tree = ttk.Treeview(top, columns=("User","Date","State"), show="headings"); tree.pack(fill=tk.BOTH, expand=True)
+        tree.heading("User", text="USUARIO"); tree.heading("Date", text="FECHA"); tree.heading("State", text="ESTADO")
+        
+        for i in self.metrics['mockIncidentData']:
+            if not i or not isinstance(i, dict): continue
+            state = "✅ RESUELTO" if i.get('id') in self.solved_incidents else "❌ PENDIENTE"
+            tree.insert("", "end", iid=i.get('id'), values=(i.get('user'), format_date(i.get('date')), state))
+
+        def open_detail(event):
+            sel = tree.selection(); 
+            if not sel: return
+            inc = next((x for x in self.metrics['mockIncidentData'] if str(x.get('id'))==sel[0]), None)
+            if not inc: return
             
-            save_path = os.path.join(DOCS_FOLDER, section, storage_name)
-            os.makedirs(os.path.join(DOCS_FOLDER, section), exist_ok=True)
-            file.save(save_path); file_size = os.path.getsize(save_path)
+            det = tk.Toplevel(self); det.title("Detalle Incidente"); det.geometry("400x500"); det.configure(bg=C_PANEL)
+            tk.Label(det, text=f"Reporte de {inc.get('user')}", bg=C_PANEL, fg=C_ACCENT, font=("Segoe UI", 12, "bold")).pack(pady=10)
+            msg_box = tk.Text(det, height=5, bg=C_BG, fg="white", bd=0); msg_box.pack(fill=tk.X, padx=10)
+            msg_box.insert(tk.END, inc.get('message','')); msg_box.config(state='disabled')
             
-            if filename == 'chat_data.json':
-                 old_chat = DocGestion.query.filter_by(name='chat_data.json', section=section).first()
-                 if old_chat: db.session.delete(old_chat)
+            if inc.get('filename') and inc.get('filename') != 'N/A':
+                tk.Button(det, text="📥 DESCARGAR LOG ADJUNTO", bg=C_YELLOW, fg="black", 
+                          command=lambda: self.download_file_real(f"/logs_incidents/{inc['filename']}", inc['filename'])).pack(fill=tk.X, padx=10, pady=5)
+
+            tk.Label(det, text="RESPONDER CON PARCHE (.py)", bg=C_PANEL, fg=C_GREEN, font=("Segoe UI", 10, "bold")).pack(pady=(15,5))
+            resp_txt = tk.Text(det, height=3, bg=C_BG, fg="white"); resp_txt.pack(fill=tk.X, padx=10)
             
-            new_doc = DocGestion(name=filename, section=section, size=file_size, storage_path=storage_name, type='file', parent_id=parent_id)
-            db.session.add(new_doc); db.session.commit()
-            return jsonify({"message": "Subido"}), 201
-        except Exception as e: return jsonify({"message": str(e)}), 500
+            def send_reply():
+                msg = resp_txt.get("1.0", tk.END).strip()
+                if not msg: return messagebox.showerror("Error", "Escribe un mensaje.")
+                file_path = filedialog.askopenfilename(filetypes=[("Python", "*.py")])
+                
+                # Si selecciona archivo, se sube. Si no, solo responde texto.
+                if file_path:
+                    with open(file_path, 'rb') as f:
+                        requests.post(f"{API_URL}/api/documentos/upload", headers=HEADERS, 
+                                      data={'section':'operaciones', 'parentId':None}, 
+                                      files={'file':(os.path.basename(file_path), f.read())})
+                
+                requests.post(f"{API_URL}/api/logs/historical", headers={"X-Username":"COO"}, 
+                              json={"quality": f"RESPUESTA_INCIDENTE_{inc['id']}"})
+                
+                self.solved_incidents.add(inc['id'])
+                messagebox.showinfo("Éxito", "Respuesta enviada."); det.destroy(); top.destroy(); self.refresh_all_data()
 
-    @app.route('/api/documentos/create-folder', methods=['POST'])
-    def create_gestion_folder():
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
+            tk.Button(det, text="ENVIAR RESPUESTA", command=send_reply, bg=C_GREEN, fg="white", pady=10).pack(fill=tk.X, padx=10, pady=10)
+
+        tree.bind("<Double-1>", open_detail)
+
+    def show_updates_window(self):
+        top = tk.Toplevel(self); top.title("Actualizaciones"); top.geometry("400x400"); top.configure(bg=C_BG)
+        tree = ttk.Treeview(top, columns=("File","Ver"), show="headings"); tree.pack(fill=tk.BOTH, expand=True)
+        tree.heading("File", text="ARCHIVO"); tree.heading("Ver", text="VERSIÓN")
+        for u in self.metrics['mockUpdateData']: 
+             if u and isinstance(u, dict):
+                 tree.insert("", "end", values=(u.get('filename'), u.get('version')))
+        
+        def upload_patch():
+            p = filedialog.askopenfilename(filetypes=[("Python Script", "*.py"), ("All Files", "*.*")])
+            if p:
+                try:
+                    with open(p, 'rb') as f:
+                        r = requests.post(f"{API_URL}/api/updates/upload", headers={"X-Admin-Key": ADMIN_BACKEND_KEY, "X-Vercel-Filename": os.path.basename(p)}, data=f.read())
+                    if r.status_code==201: messagebox.showinfo("OK", "Parche subido."); top.destroy(); self.refresh_all_data()
+                except Exception as e: messagebox.showerror("Error", str(e))
+        
+        tk.Button(top, text="⬆️ SUBIR PARCHE (.PY)", command=upload_patch, bg=C_YELLOW, fg="black", pady=10).pack(fill=tk.X)
+
+    # --- FUNCIÓN REAL DE DESCARGA AL DISCO ---
+    def download_file_real(self, endpoint, filename):
+        url = f"{API_URL}{endpoint}"
+        save_path = filedialog.asksaveasfilename(initialfile=filename, title="Guardar archivo como...")
+        if not save_path: return
+        
         try:
-            d = request.get_json(); parent_id = d.get('parentId')
-            if parent_id in ['null', 'None']: parent_id = None
-            new_folder = DocGestion(name=d.get('name'), section=d.get('section', 'gestion'), type='folder', parent_id=parent_id)
-            db.session.add(new_folder); db.session.commit()
-            return jsonify({"message": "Carpeta creada"}), 201
-        except Exception as e: return jsonify({"message": str(e)}), 500
-
-    @app.route('/api/documentos/delete/<int:doc_id>', methods=['DELETE'])
-    def delete_gestion_doc(doc_id):
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
-        try:
-            doc = DocGestion.query.get(doc_id)
-            if doc:
-                if doc.type == 'file' and doc.storage_path:
-                     try: os.remove(os.path.join(DOCS_FOLDER, doc.section, doc.storage_path))
-                     except: pass
-                db.session.delete(doc); db.session.commit()
-                return jsonify({"message": "Eliminado"}), 200
-            return jsonify({"message": "No encontrado"}), 404
-        except Exception as e: return jsonify({"message": str(e)}), 500
-
-    @app.route('/api/logs/historical', methods=['POST', 'GET'])
-    def logs(): 
-        if request.method == 'GET':
-            if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
-            logs = HistoricalLog.query.order_by(HistoricalLog.date.desc()).limit(100).all()
-            return jsonify([{"id": l.id, "user": l.user, "ip": l.ip, "quality": l.quality, "date": l.date.isoformat()} for l in logs]), 200
-        user = request.headers.get('X-Username'); filename_ref = f"LOG_{user}_{uuid.uuid4().hex}.log"
-        new_log = HistoricalLog(user=user, ip=request.headers.get('X-IP'), quality=request.headers.get('X-Quality'), filename=filename_ref, storage_path=filename_ref, date=datetime.datetime.utcnow())
-        db.session.add(new_log); db.session.commit()
-        return jsonify({"status": "Log registrado"}), 201
-            
-    @app.route('/api/logs/incident', methods=['POST'])
-    def inc(): 
-        user = request.form.get('X-Username'); file = request.files.get('log_file'); filename = secure_filename(file.filename) if file else "N/A"
-        new_incident = IncidentReport(user=user, ip=request.form.get('X-IP'), message=request.form.get('message'), filename=filename, storage_path=f"INCIDENT_{user}_{filename}", date=datetime.datetime.utcnow())
-        db.session.add(new_incident); db.session.commit()
-        return jsonify({"status":"Reporte recibido"}), 201
-
-    @app.route('/api/logs/incidents', methods=['GET'])
-    def incs(): 
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
-        reports = IncidentReport.query.order_by(IncidentReport.date.desc()).limit(100).all()
-        return jsonify([{"id": r.id, "user": r.user, "message": r.message, "date": r.date.isoformat()} for r in reports]), 200
-
-    @app.route('/api/updates/upload', methods=['POST'])
-    def upload_update_file_route():
-        filename = secure_filename(request.headers.get('X-Vercel-Filename'))
-        save_path = os.path.join(UPDATES_FOLDER, filename); 
-        with open(save_path, 'wb') as f: f.write(request.data)
-        existing = UpdateFile.query.filter_by(filename=filename).first()
-        if existing: db.session.delete(existing); db.session.commit()
-        new_update = UpdateFile(filename=filename, version="1.0", size=os.path.getsize(save_path), storage_path=filename)
-        db.session.add(new_update); db.session.commit()
-        return jsonify({"message": "Actualización subida"}), 201
-
-    @app.route('/api/updates/list', methods=['GET'])
-    def list_update_files():
-        updates = UpdateFile.query.order_by(UpdateFile.date.desc()).all()
-        return jsonify([{"id": u.id, "name": u.filename, "version": u.version} for u in updates]), 200
-
-    @app.route('/api/updates/check', methods=['GET'])
-    def chk():
-        latest = UpdateFile.query.order_by(UpdateFile.date.desc()).first()
-        if not latest: return jsonify({"message":"No updates"}), 404
-        return jsonify({"version": latest.version, "download_url": get_file_url(latest.storage_path, 'updates')}), 200
-
-    @app.route('/api/biblioteca/public-files', methods=['GET'])
-    def get_public_files():
-        try:
-            files = UserFile.query.filter_by(is_published=True).order_by(UserFile.created_at.desc()).all()
-            file_list = []
-            for f in files:
-                file_list.append({
-                    "id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id,
-                    "size_bytes": f.size_bytes, "size": format_file_size(f.size_bytes),
-                    "path": get_file_url(f.storage_path, 'uploads'),
-                    "isPublished": f.is_published, "date": f.created_at.strftime('%Y-%m-%d'),
-                    "verificationStatus": f.verification_status,
-                    "monetization": {"enabled": f.price > 0, "price": f.price},
-                    "description": f.description, "tags": f.tags.split(',') if f.tags else [],
-                    "userId": f.owner_username 
-                })
-            return jsonify(file_list), 200
-        except: return jsonify([]), 200
-
-    @app.route('/api/biblioteca/profiles', methods=['GET'])
-    def get_public_profiles():
-        try:
-            users = User.query.all(); profile_list = []
-            for u in users: profile_list.append({"username": u.username.lower(), "displayName": getattr(u, 'display_name', u.username.capitalize()), "avatar": getattr(u, 'avatar', '/user.ico')})
-            return jsonify(profile_list), 200
-        except: return jsonify([]), 200
-
-    # --- ENDPOINTS ESPECÍFICOS PARA EL CHAT ---
-    @app.route('/api/chat/history', methods=['GET'])
-    def get_chat_history_api():
-        try:
-            path = os.path.join(DOCS_FOLDER, 'operaciones', 'chat_data.json')
-            if not os.path.exists(path):
-                 default = [{"user":"System","msg":"Chat Iniciado","date":datetime.datetime.now().strftime("%H:%M")}]
-                 with open(path, 'w') as f: json.dump(default, f)
-                 return jsonify(default), 200
-            with open(path, 'r') as f: return jsonify(json.load(f)), 200
-        except: return jsonify([]), 200
-
-    @app.route('/api/chat/send', methods=['POST'])
-    def send_chat_msg_api():
-        try:
-            path = os.path.join(DOCS_FOLDER, 'operaciones', 'chat_data.json')
-            data = request.get_json()
-            history = []
-            if os.path.exists(path):
-                with open(path, 'r') as f: history = json.load(f)
-            new_msg = {"user": data.get("user", "Anon"), "msg": data.get("msg", ""), "date": datetime.datetime.now().strftime("%H:%M")}
-            history.append(new_msg)
-            if len(history) > 50: history = history[-50:]
-            with open(path, 'w') as f: json.dump(history, f, indent=2)
-            return jsonify({"status": "OK", "history": history}), 200
-        except Exception as e: return jsonify({"error": str(e)}), 500
-
-    @app.route('/admin/fix_doc_table', methods=['GET'])
-    def fix_doc_table_structure():
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: 
-            return jsonify({"msg": "Acceso denegado"}), 403
-        try:
-            with app.app_context():
-                print(">>> BORRANDO TABLA ANTIGUA doc_gestion...")
-                db.session.execute(text('DROP TABLE IF EXISTS doc_gestion CASCADE;'))
-                db.session.commit()
-                print(">>> RECREANDO TABLAS...")
-                db.create_all()
-            return jsonify({"message": "ÉXITO: Tabla doc_gestion reconstruida."}), 200
+            r = requests.get(url, stream=True)
+            if r.status_code == 200:
+                with open(save_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
+                messagebox.showinfo("Descarga", f"Archivo guardado en:\n{save_path}")
+            else:
+                messagebox.showerror("Error", f"Error del servidor: {r.status_code}")
         except Exception as e:
-            db.session.rollback()
-            return jsonify({"error": f"Fallo crítico: {str(e)}"}), 500
+            messagebox.showerror("Error", f"Fallo en descarga: {e}")
+
+    # ==========================================================
+    # ⚙️ VISTA 3: OPERACIONES (DOCUMENTOS)
+    # ==========================================================
+    def build_ops(self):
+        self.lbl_title.config(text="OPERACIONES", fg=C_YELLOW)
+        f = tk.Frame(self.container, bg=C_BG); self.current_frame = f
+        bar = tk.Frame(f, bg=C_BG, pady=5, padx=10); bar.pack(fill=tk.X)
+        if self.current_dir: tk.Button(bar, text="⬅", command=self.ops_back, bg=C_PANEL, fg="white", bd=0, width=4).pack(side=tk.LEFT)
+        tk.Button(bar, text="+📂", command=self.ops_new, bg=C_YELLOW, fg="black", bd=0, width=4).pack(side=tk.RIGHT, padx=2)
+        tk.Button(bar, text="+📄", command=self.ops_up, bg=C_GREEN, fg="white", bd=0, width=4).pack(side=tk.RIGHT, padx=2)
+        self.ops_scroll = tk.Frame(f, bg=C_BG); self.ops_scroll.pack(fill=tk.BOTH, expand=True, padx=10); self.render_ops_list()
+
+    def render_ops_list(self):
+        for w in self.ops_scroll.winfo_children(): w.destroy()
+        def nm(v): return int(v) if v not in [None, 'null'] and str(v).isdigit() else None
+        items = [x for x in self.metrics['mockOperationFiles'] if nm(x.get('parent_id')) == nm(self.current_dir)]
+        
+        # FILTRO: Solo carpetas y PDFs
+        valid_items = [i for i in items if i.get('type')=='folder' or i.get('name','').lower().endswith('.pdf')]
+
+        if not valid_items: tk.Label(self.ops_scroll, text="(Vacío)", bg=C_BG, fg=C_MUTED).pack(pady=20)
+        for i in valid_items:
+            r = tk.Frame(self.ops_scroll, bg=C_PANEL, pady=8, padx=10); r.pack(fill=tk.X, pady=2)
+            fol = i.get('type')=='folder'
+            tk.Label(r, text=f"{'📁' if fol else '📄'} {i['name']}", bg=C_PANEL, fg=(C_YELLOW if fol else C_ACCENT)).pack(side=tk.LEFT)
+            r.bind("<Button-1>", lambda e, x=i: (setattr(self, 'current_dir', x['id']) or self.render_ops_list()) if x.get('type')=='folder' else None)
+            tk.Button(r, text="X", command=lambda x=i: self.ops_del(x), bg=C_RED, fg="white", bd=0, width=3).pack(side=tk.RIGHT)
+
+    def ops_back(self):
+        c = next((x for x in self.metrics['mockOperationFiles'] if x['id'] == self.current_dir), None)
+        self.current_dir = c.get('parent_id') if c else None; self.render_ops_list()
     
-    # ===============================================================
-    # 🔗 ZONA DE INTEGRACIÓN WORKER (S4)
-    # ===============================================================
-    CONVERSION_RECORDS_FILE = os.path.join(BASE_DIR, 'server_conversion_records.json')
+    def ops_new(self): 
+        n = simpledialog.askstring("Nueva", "Nombre:")
+        if n: self.api_req("/api/documentos/create-folder", lambda r: self.refresh_all_data(), method='POST', data={'name':n, 'section':'operaciones', 'parentId':self.current_dir})
+    def ops_up(self): 
+        p = filedialog.askopenfilename(filetypes=[("PDF","*.pdf")])
+        if p: 
+            def run(): requests.post(f"{API_URL}/api/documentos/upload", headers=HEADERS, data={'section':'operaciones', 'parentId':self.current_dir}, files={'file':(os.path.basename(p), open(p,'rb').read())}); self.after(0, self.refresh_all_data)
+            threading.Thread(target=run).start()
+    def ops_del(self, i): check_auth("Borrar", lambda: self.api_req(f"/api/documentos/delete/{i['id']}", lambda r: self.refresh_all_data(), method='DELETE'))
 
-    def load_conversion_records():
-        if not os.path.exists(CONVERSION_RECORDS_FILE): return []
-        try:
-            with open(CONVERSION_RECORDS_FILE, 'r') as f: return json.load(f)
-        except: return []
-
-    def save_conversion_records(data):
-        try:
-            with open(CONVERSION_RECORDS_FILE, 'w') as f: json.dump(data, f)
-        except: pass
-
-    @app.route('/api/worker/check-permission', methods=['POST'])
-    def worker_check_permission():
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"allow": False, "reason": "Auth Fail"}), 403
-        data = request.get_json()
-        client_id = data.get('singleUseClientId')
-        cooldown_hours = 48
-        records = load_conversion_records()
-        user_records = sorted([r for r in records if r.get("singleUseClientId") == client_id], key=lambda x: x["timestamp"], reverse=True)
-        if not user_records: return jsonify({"allow": True}), 200
-        try:
-            last_time = datetime.datetime.fromisoformat(user_records[0]["timestamp"].replace("Z", ""))
-            unlock_time = last_time + timedelta(hours=cooldown_hours)
-            if datetime.datetime.utcnow() < unlock_time:
-                remaining = str(unlock_time - datetime.datetime.utcnow()).split('.')[0]
-                return jsonify({"allow": False, "reason": f"Cooldown activo. Espera: {remaining}"}), 200
-        except: return jsonify({"allow": True}), 200
-        return jsonify({"allow": True}), 200
-
-    @app.route('/api/worker/log-success', methods=['POST'])
-    def worker_log_success():
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"status": "Fail"}), 403
-        new_record = request.get_json()
-        records = load_conversion_records()
-        records.append(new_record)
-        if len(records) > 1000: records = records[-1000:]
-        save_conversion_records(records)
-        return jsonify({"status": "Recorded"}), 201
-
-    @app.route('/api/worker/records', methods=['GET'])
-    def get_worker_records():
-        return jsonify({"records": load_conversion_records()}), 200
-            
-    return app
-
-if __name__ == '__main__': 
-    app = create_app()
-    socketio.run(app, host='0.0.0.0', port=7860)
+if __name__ == "__main__":
+    app = COOMasterApp()
+    app.mainloop()
