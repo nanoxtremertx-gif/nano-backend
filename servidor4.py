@@ -1,4 +1,4 @@
-# servidor4.py (v6.1 - Fix DB String Length)
+# servidor4.py (v7.0 - AUTORÍA DINÁMICA DE USUARIO)
 import os
 import sys
 import json
@@ -42,7 +42,7 @@ ENCODER_SCRIPTS = {
     "bitabit": ENCODER_DIR / "encoderc.py"
 }
 
-# --- MEMORIA DE TRABAJOS (JOBS) ---
+# --- MEMORIA DE TRABAJOS ---
 JOBS = {} 
 
 def ask_permission(client_id):
@@ -61,15 +61,15 @@ def upload_to_srv1(username, file_path):
     try:
         url = f"{SRV1_URL.rstrip('/')}/api/upload-file"
         
-        # --- ¡CORRECCIÓN AQUÍ! ---
-        # Antes: "verified_nano_quantum" (21 chars) -> Error DB
-        # Ahora: "verified_quantum" (16 chars) -> OK
+        # --- ¡CAMBIO DE ESTRATEGIA! ---
+        # 1. El archivo lleva la firma del usuario (fingerprint).
+        # 2. Aquí le decimos a S1 que ya fue verificado cuánticamente.
         payload = {
             "userId": username,
             "parentId": "null", 
-            "verificationStatus": "verified_quantum" 
+            "verificationStatus": "verified_quantum", # Check Verde automático
+            "description": "Generado por NANO CRS (Web Creator)" # Marca de origen
         }
-        # -------------------------
 
         with open(file_path, 'rb') as f:
             files = {'file': (file_path.name, f, 'application/octet-stream')}
@@ -100,13 +100,18 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
         final_crs = output_dir / f"{base_name}.crs"
         script = ENCODER_SCRIPTS[encoder_type]
         
+        # --- ¡LA MAGIA ESTÁ AQUÍ! ---
+        # Usamos 'username' en el --author.
+        # Esto hace que el Q-DNA (Lentes) sea igual al usuario logueado.
+        # Resultado: El archivo es "propiedad verificada" del usuario.
         cmd = [
             sys.executable, str(script),
             str(temp_in), base_name,
             "--crs_dir", str(output_dir),
             "--models_dir", str(MODELS_DIR),
-            "--author", "NANO"
+            "--author", username 
         ]
+        
         if encoder_type == "perceptual": cmd.extend(["--fidelity_quality", "0"])
 
         # 2. EJECUTAR Y LEER PROGRESO
@@ -211,7 +216,7 @@ def check_status(job_id):
     return jsonify(job), 200
 
 @app.route("/")
-def home(): return "S4 REAL-TIME WORKER (V6.1 - FIX DB)", 200
+def home(): return "S4 WORKER (V7.0 - USER FINGERPRINT)", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=7860)
