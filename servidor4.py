@@ -1,4 +1,4 @@
-# servidor4.py (v7.1 - FIX TIMEOUT / COLD START)
+# servidor4.py (v8.0 - FAIL-OPEN PERMISSION)
 import os
 import sys
 import json
@@ -46,47 +46,68 @@ ENCODER_SCRIPTS = {
 JOBS = {} 
 
 def ask_permission(client_id):
+    """
+    Consulta permiso. Si falla o tarda > 5s, DEVUELVE TRUE (Permitir).
+    Prioridad: Funcionamiento sobre Restricción.
+    """
     try:
         url = f"{SRV1_URL.rstrip('/')}/api/worker/check-permission"
         headers = {"X-Admin-Key": SRV1_MASTER_KEY}
         payload = {"singleUseClientId": client_id}
         
-        # --- CAMBIO: Timeout aumentado a 60s para esperar a que S1 despierte ---
-        resp = requests.post(url, json=payload, headers=headers, timeout=60)
+        print(f"[S4] Verificando Cooldown en S1...")
+        # Timeout corto: Si no responde rápido, asumimos que está ocupado y dejamos pasar.
+        resp = requests.post(url, json=payload, headers=headers, timeout=5)
         
         if resp.status_code == 200:
-            return resp.json().get("allow", False), resp.json().get("reason", "Unknown")
-        return False, f"Error Srv1 ({resp.status_code})"
-    except Exception as e: return False, str(e)
+            allow = resp.json().get("allow", False)
+            reason = resp.json().get("reason", "Unknown")
+            # Si S1 dice explícitamente NO, respetamos el NO.
+            if not allow: return False, reason
+            return True, "OK"
+            
+        # Si S1 da error 500/404, dejamos pasar.
+        print(f"[S4] S1 respondió error {resp.status_code}. Saltando restricción.")
+        return True, "S1_Error_Skipped"
+        
+    except Exception as e:
+        # Si hay timeout o error de red, dejamos pasar.
+        print(f"[S4] S1 no responde ({str(e)}). Saltando restricción.")
+        return True, "S1_Timeout_Skipped"
 
 def upload_to_srv1(username, file_path):
     if not file_path.exists(): return False, "Archivo no existe"
     try:
         url = f"{SRV1_URL.rstrip('/')}/api/upload-file"
         
+        # Datos corregidos para DB
         payload = {
             "userId": username,
             "parentId": "null", 
-            "verificationStatus": "verified_quantum",
-            "description": "Generado por NANO CRS (Web Creator)"
+            "verificationStatus": "verified_quantum", # 16 chars (entra en DB varchar 20)
+            "description": "Generado por NANO CRS"
         }
 
         with open(file_path, 'rb') as f:
             files = {'file': (file_path.name, f, 'application/octet-stream')}
-            # Subida de archivos mantiene timeout largo (5 min)
+            # Aquí sí esperamos (timeout 300s) porque es la subida vital
             resp = requests.post(url, data=payload, files=files, timeout=300)
-        return (True, "OK") if 200 <= resp.status_code < 300 else (False, resp.text)
+            
+        if 200 <= resp.status_code < 300:
+            return True, "OK"
+        else:
+            return False, f"S1 Rechazo ({resp.status_code}): {resp.text[:50]}"
     except Exception as e: return False, str(e)
 
 def report_log_final(record):
     try:
+        # Reporte asíncrono (fire and forget), timeout corto
         url = f"{SRV1_URL.rstrip('/')}/api/worker/log-success"
         headers = {"X-Admin-Key": SRV1_MASTER_KEY}
-        # --- CAMBIO: Timeout aumentado a 60s ---
-        requests.post(url, json=record, headers=headers, timeout=60)
+        requests.post(url, json=record, headers=headers, timeout=5)
     except: pass
 
-# --- HILO DE TRABAJO (WORKER THREAD) ---
+# --- HILO DE TRABAJO ---
 def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_role, location, user_ip):
     job = JOBS[job_id]
     job['status'] = 'processing'
@@ -97,11 +118,12 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
     output_dir = Path(tempfile.mkdtemp(dir=TEMP_OUTPUT_DIR))
     
     try:
-        # 1. Preparar Comando
+        # 1. Encoder
         base_name = f"{temp_in.stem}_{encoder_type}"
         final_crs = output_dir / f"{base_name}.crs"
         script = ENCODER_SCRIPTS[encoder_type]
         
+        # Autor dinámico
         cmd = [
             sys.executable, str(script),
             str(temp_in), base_name,
@@ -109,10 +131,8 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
             "--models_dir", str(MODELS_DIR),
             "--author", username 
         ]
-        
         if encoder_type == "perceptual": cmd.extend(["--fidelity_quality", "0"])
 
-        # 2. EJECUTAR Y LEER PROGRESO
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
         
         while True:
@@ -131,7 +151,7 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
             stderr = process.stderr.read()
             raise Exception(f"Fallo Encoder: {stderr[-200:]}")
 
-        # 3. SUBIDA AL MAESTRO
+        # 2. Subida
         job['progress'] = 95
         input_size_mb = temp_in.stat().st_size / (1024*1024)
         final_size_mb = final_crs.stat().st_size / (1024*1024)
@@ -139,7 +159,7 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
         ok, msg = upload_to_srv1(username, final_crs)
         if not ok: raise Exception(f"Fallo subida S1: {msg}")
 
-        # 4. DATOS FINALES
+        # 3. Reporte
         end_time = time.time()
         exec_time_sec = end_time - start_time
         mins, secs = divmod(int(exec_time_sec), 60)
@@ -193,9 +213,12 @@ def start_conversion():
     location = request.form.get("location", "Desconocido")
     user_ip = request.form.get("userIp", "0.0.0.0")
 
-    # Pedimos permiso con el nuevo timeout de 60s
+    # Check Permission (Modo Fail-Open)
+    # Si hay error de red, devuelve TRUE para no bloquear.
     allowed, reason = ask_permission(client_id)
-    if not allowed: return jsonify({"success": False, "error": reason}), 429
+    
+    if not allowed: 
+        return jsonify({"success": False, "error": reason}), 429
 
     temp_path = Path(tempfile.mkdtemp(dir=TEMP_INPUT_DIR)) / file.filename
     file.save(temp_path)
@@ -215,7 +238,7 @@ def check_status(job_id):
     return jsonify(job), 200
 
 @app.route("/")
-def home(): return "S4 WORKER (V7.1 - TIMEOUT FIX)", 200
+def home(): return "S4 WORKER (V8.0 - NO WAIT)", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=7860)
