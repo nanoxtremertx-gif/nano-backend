@@ -1,4 +1,4 @@
-# --- servidor.py --- (v22.0 - FIX VISIBILIDAD Y CANAL VERDE)
+# --- servidor.py --- (v22.0 - MAESTRO FINAL UNIFICADO: CORE + CHAT + WORKER S4)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -23,7 +23,7 @@ socketio = SocketIO()
 
 # --- 3. Memoria RAM (Global) ---
 ONLINE_USERS = {}
-ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
+ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025"
 db_status = "Desconocido"
 
 # --- 4. DEFINIR LA FÁBRICA DE LA APLICACIÓN ---
@@ -31,12 +31,12 @@ def create_app():
     global db_status
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v22.0 - Fix Visibilidad) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v22.0 - Full Integration) <<<")
 
     # --- 5. CONFIGURACIÓN DE APP ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     
-    # MOTOR DB NEON (Anti-Disconnect)
+    # OPTIMIZACIÓN DB NEON (Anti-Disconnect)
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
         "pool_pre_ping": True,
         "pool_recycle": 300,
@@ -48,22 +48,21 @@ def create_app():
     try:
         raw_url = os.environ.get('NEON_URL')
         if not raw_url:
-            print("⚠️ NEON_URL no encontrada. Usando SQLite local.")
-            app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///local_fallback.db"
-            db_status = "SQLite (Local)"
-        else:
-            parsed = urlparse(raw_url)
-            scheme = 'postgresql' if parsed.scheme == 'postgres' else parsed.scheme
-            clean_url = urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).strip("'").strip()
-            if 'postgresql' in clean_url and 'sslmode' not in clean_url:
-                clean_url += "?sslmode=require"
-            
-            app.config['SQLALCHEMY_DATABASE_URI'] = clean_url
-            db_status = "Neon PostgreSQL (REAL)"
-            print(f"Base de datos configurada: {db_status}")
+            raise ValueError("NEON_URL no encontrada.")
+        
+        parsed = urlparse(raw_url)
+        scheme = 'postgresql' if parsed.scheme == 'postgres' else parsed.scheme
+        clean_url = urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).strip("'").strip()
+        if 'postgresql' in clean_url and 'sslmode' not in clean_url:
+            clean_url += "?sslmode=require"
+        
+        app.config['SQLALCHEMY_DATABASE_URI'] = clean_url
+        db_status = "Neon PostgreSQL (REAL)"
+        print(f"Base de datos configurada: {db_status}")
 
     except Exception as e:
         print(f"!!! ERROR CRÍTICO AL CONFIGURAR DB: {e}")
+        print("!!! USANDO SQLITE COMO FALLBACK.")
         app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
         db_status = "SQLite (FALLBACK)"
 
@@ -71,7 +70,7 @@ def create_app():
     cors.init_app(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
     socketio.init_app(app, cors_allowed_origins="*")
     bcrypt.init_app(app)
-    db.init_app(app)
+    db.init_app(app) 
 
     # --- 7. DIRECTORIOS ---
     BASE_DIR = os.getcwd()
@@ -81,7 +80,7 @@ def create_app():
     UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates')
     INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')
     DOCS_FOLDER = os.path.join(BASE_DIR, 'documentos_gestion')
-    BIBLIOTECA_PUBLIC_FOLDER = os.path.join(BASE_DIR, 'biblioteca_publica')
+    BIBLIOTECA_PUBLIC_FOLDER = os.path.join(BASE_DIR, 'biblioteca_publica') 
 
     # Crear carpetas
     for folder in [UPLOAD_FOLDER, AVATARS_FOLDER, LOGS_FOLDER, UPDATES_FOLDER, INCIDENTS_FOLDER, DOCS_FOLDER, BIBLIOTECA_PUBLIC_FOLDER]:
@@ -104,7 +103,7 @@ def create_app():
         return f"{request.host_url}{folder_route}/{filename}"
 
     def format_file_size(size_bytes):
-        if size_bytes is None: return "N/A"
+        if size_bytes is None: return "N/A" 
         if size_bytes < 1024: return f"{size_bytes} Bytes"
         if size_bytes < 1048576: return f"{size_bytes / 1024:.1f} KB"
         elif size_bytes < 1073741824: return f"{size_bytes / 1048576:.2f} MB"
@@ -117,7 +116,7 @@ def create_app():
 
     # --- RUTAS PÚBLICAS Y HEALTH CHECK ---
     @app.route('/')
-    def health_check():
+    def health_check(): 
         return jsonify({"status": "v22.0 ONLINE (Maestro)", "db": db_status}), 200
 
     @app.route('/uploads/<path:filename>')
@@ -131,11 +130,11 @@ def create_app():
     @app.route('/updates/<path:filename>')
     def download_update_file(filename): return send_from_directory(UPDATES_FOLDER, filename)
     @app.route('/documentos_gestion/<path:section>/<path:filename>')
-    def download_doc_gestion(section, filename):
+    def download_doc_gestion(section, filename): 
         if section not in SUB_DOC_FOLDERS: return jsonify({"msg": "Sección inválida"}), 400
         return send_from_directory(os.path.join(DOCS_FOLDER, section), filename)
     @app.route('/biblioteca_publica/<path:filename>')
-    def download_biblioteca_file(filename):
+    def download_biblioteca_file(filename): 
         return send_from_directory(BIBLIOTECA_PUBLIC_FOLDER, filename)
     
     @app.route('/admin/create_tables', methods=['GET'])
@@ -166,11 +165,11 @@ def create_app():
         if User.query.filter_by(email=d.get('email')).first(): return jsonify({"message": "Email ocupado"}), 409
         
         new_user = User(
-            username=d.get('username'),
-            hash=bcrypt.generate_password_hash(d.get('password')).decode('utf-8'),
-            email=d.get('email'),
-            identificador=d.get('identificador'),
-            role="gratis",
+            username=d.get('username'), 
+            hash=bcrypt.generate_password_hash(d.get('password')).decode('utf-8'), 
+            email=d.get('email'), 
+            identificador=d.get('identificador'), 
+            role="gratis", 
             fingerprint=d.get('username').lower(),
             display_name=d.get('username').capitalize(),
             bio="Nuevo usuario en Nano Xtreme",
@@ -189,7 +188,7 @@ def create_app():
             emit_online_count()
             return jsonify({"message": "Registrado"}), 201
             
-        except Exception as e:
+        except Exception as e: 
             db.session.rollback()
             return jsonify({"message": f"Error de BD: {str(e)}"}), 500
 
@@ -211,7 +210,7 @@ def create_app():
             emit_online_count()
             
             return jsonify({
-                "message": "OK",
+                "message": "OK", 
                 "user": {
                     "username": u.username, "email": u.email, "role": u.role, "identificador": u.identificador, "isAdmin": u.role == 'admin',
                     "displayName": getattr(u, 'display_name', u.username),
@@ -352,29 +351,21 @@ def create_app():
             return jsonify(file_list), 200
         except: return jsonify([]), 200
 
-    # --- ENDPOINT PRINCIPAL DE SUBIDA (MODIFICADO PARA ORPHANS) ---
     @app.route('/api/upload-file', methods=['POST'])
     def upload_user_file():
         try:
             if 'file' not in request.files: return jsonify({"message": "Falta archivo"}), 400
             file = request.files['file']; user_id = request.form.get('userId')
-            parent_id = request.form.get('parentId')
-            verification_status = request.form.get('verificationStatus', 'N/A')
+            parent_id = request.form.get('parentId'); verification_status = request.form.get('verificationStatus', 'N/A')
             
             filename = secure_filename(file.filename); unique_name = f"{uuid.uuid4().hex[:8]}_{filename}"
             save_path = os.path.join(UPLOAD_FOLDER, unique_name)
             file.save(save_path); file_size = os.path.getsize(save_path)
             
-            # --- LÓGICA ANTI-HUÉRFANOS ---
-            # Si S4 manda "null" o no manda nada, buscamos la carpeta raíz del usuario
+            # Lógica Anti-Huérfanos (S4)
             if parent_id == 'null' or parent_id == 'undefined' or not parent_id:
                 root_folder = UserFile.query.filter_by(owner_username=user_id, parent_id=None, type='folder').first()
-                if root_folder:
-                    parent_id = root_folder.id
-                else:
-                    # Si el usuario no tiene carpeta raíz (raro), lo dejamos en None (root)
-                    parent_id = None
-            # -----------------------------
+                parent_id = root_folder.id if root_folder else None
             
             new_file = UserFile(owner_username=user_id, name=filename, type='file', parent_id=parent_id, size_bytes=file_size, storage_path=unique_name, verification_status=verification_status)
             db.session.add(new_file); db.session.commit()
@@ -432,6 +423,7 @@ def create_app():
             return jsonify({"msg": "404"}), 404
         except Exception as e: return jsonify({"message": str(e)}), 500
 
+    # --- INSPECCIÓN BÁSICA DE AUTOR ---
     @app.route('/get-crs-author', methods=['POST'])
     def inspect_crs_author():
         try:
@@ -446,6 +438,7 @@ def create_app():
             return jsonify({"authorId": str(author_id)}), 200
         except: return jsonify({"error": "Error"}), 500
 
+    # --- DOCUMENTOS Y LOGS (CON CHAT OCULTO) ---
     @app.route('/api/documentos/<section>', methods=['GET'])
     def get_gestion_docs(section):
         try:
@@ -469,14 +462,18 @@ def create_app():
             file = request.files['file']; section = request.form['section']; parent_id = request.form.get('parentId')
             if parent_id in ['null', 'None']: parent_id = None
             filename = secure_filename(file.filename)
+            
             if filename == 'chat_data.json': storage_name = filename
             else: storage_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+            
             save_path = os.path.join(DOCS_FOLDER, section, storage_name)
             os.makedirs(os.path.join(DOCS_FOLDER, section), exist_ok=True)
             file.save(save_path); file_size = os.path.getsize(save_path)
+            
             if filename == 'chat_data.json':
                  old_chat = DocGestion.query.filter_by(name='chat_data.json', section=section).first()
                  if old_chat: db.session.delete(old_chat)
+            
             new_doc = DocGestion(name=filename, section=section, size=file_size, storage_path=storage_name, type='file', parent_id=parent_id)
             db.session.add(new_doc); db.session.commit()
             return jsonify({"message": "Subido"}), 201
@@ -500,8 +497,8 @@ def create_app():
             doc = DocGestion.query.get(doc_id)
             if doc:
                 if doc.type == 'file' and doc.storage_path:
-                      try: os.remove(os.path.join(DOCS_FOLDER, doc.section, doc.storage_path))
-                      except: pass
+                     try: os.remove(os.path.join(DOCS_FOLDER, doc.section, doc.storage_path))
+                     except: pass
                 db.session.delete(doc); db.session.commit()
                 return jsonify({"message": "Eliminado"}), 200
             return jsonify({"message": "No encontrado"}), 404
@@ -580,6 +577,7 @@ def create_app():
             return jsonify(profile_list), 200
         except: return jsonify([]), 200
 
+    # --- ENDPOINTS ESPECÍFICOS PARA EL CHAT ---
     @app.route('/api/chat/history', methods=['GET'])
     def get_chat_history_api():
         try:
@@ -608,11 +606,14 @@ def create_app():
 
     @app.route('/admin/fix_doc_table', methods=['GET'])
     def fix_doc_table_structure():
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
+        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: 
+            return jsonify({"msg": "Acceso denegado"}), 403
         try:
             with app.app_context():
+                print(">>> BORRANDO TABLA ANTIGUA doc_gestion...")
                 db.session.execute(text('DROP TABLE IF EXISTS doc_gestion CASCADE;'))
                 db.session.commit()
+                print(">>> RECREANDO TABLAS...")
                 db.create_all()
             return jsonify({"message": "ÉXITO: Tabla doc_gestion reconstruida."}), 200
         except Exception as e:
@@ -666,7 +667,7 @@ def create_app():
     @app.route('/api/worker/records', methods=['GET'])
     def get_worker_records():
         return jsonify({"records": load_conversion_records()}), 200
-
+            
     return app
 
 if __name__ == '__main__': 
