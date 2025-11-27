@@ -1,4 +1,4 @@
-# servidor4.py (v9.0 - ROBUSTEZ TOTAL: DOBLE INTENTO DE SUBIDA)
+# servidor4.py (v11.0 - USER EXTERNAL / NANO INTERNAL)
 import os
 import sys
 import json
@@ -15,7 +15,6 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 # --- CONFIGURACIÓN ---
-# Default hardcoded por si el Secret falla
 SRV1_URL = os.environ.get("SRV1_URL", "https://nano-xtremertx-nano-backend.hf.space")
 SRV1_MASTER_KEY = os.environ.get("SRV1_KEY", "NANO_MASTER_KEY_2025")
 
@@ -53,7 +52,6 @@ def ask_permission(client_id):
         headers = {"X-Admin-Key": SRV1_MASTER_KEY}
         payload = {"singleUseClientId": client_id}
         
-        # Timeout corto (5s) para no bloquear
         resp = requests.post(url, json=payload, headers=headers, timeout=5)
         
         if resp.status_code == 200:
@@ -61,29 +59,23 @@ def ask_permission(client_id):
             reason = resp.json().get("reason", "Unknown")
             if not allow: return False, reason
             return True, "OK"
-            
-        print(f"[S4] S1 Permission Check falló ({resp.status_code}). Saltando restricción.")
         return True, "S1_Error_Skipped"
-        
     except Exception as e:
-        print(f"[S4] S1 no responde al permiso. Saltando. Error: {e}")
         return True, "S1_Timeout_Skipped"
 
 def upload_to_srv1(username, file_path):
-    """Intenta subir a /api/upload-file, si falla (404), prueba /api/upload"""
+    """Sube a S1 marcando el archivo como verificado."""
     if not file_path.exists(): return False, "Archivo no existe"
     
-    # 1. Definir endpoints a probar (Prioridad: upload-file)
     base_url = SRV1_URL.rstrip('/')
+    # Intentamos ambas rutas por compatibilidad
     endpoints = [f"{base_url}/api/upload-file", f"{base_url}/api/upload"]
     
-    # Payload optimizado
     payload = {
         "userId": username,
         "parentId": "null", 
-        "verificationStatus": "verified_quantum", # 16 chars (Safe for DB)
-        "description": "Generado por NANO CRS",
-        # Campos extra para compatibilidad con endpoints viejos
+        "verificationStatus": "verified_quantum", # Check Verde
+        "description": "NANO XTREMERTX 1.0", # Q-DNA Visible
         "metadata": json.dumps({
             "userId": username,
             "type": "file",
@@ -93,27 +85,16 @@ def upload_to_srv1(username, file_path):
     }
 
     last_error = ""
-
     for url in endpoints:
         try:
-            print(f"[S4] Intentando subir a: {url}")
-            # Re-abrir archivo en cada intento para resetear puntero
             with open(file_path, 'rb') as f:
                 files = {'file': (file_path.name, f, 'application/octet-stream')}
                 resp = requests.post(url, data=payload, files=files, timeout=300)
-            
-            if 200 <= resp.status_code < 300:
-                print(f"[S4] ¡Éxito en {url}!")
-                return True, "OK"
-            
+            if 200 <= resp.status_code < 300: return True, "OK"
             last_error = f"HTTP {resp.status_code}: {resp.text[:50]}"
-            print(f"[S4] Falló en {url} -> {last_error}")
-            
         except Exception as e:
             last_error = str(e)
-            print(f"[S4] Excepción en {url} -> {last_error}")
-
-    return False, f"Todos los intentos fallaron. Último error: {last_error}"
+    return False, last_error
 
 def report_log_final(record):
     try:
@@ -133,18 +114,24 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
     output_dir = Path(tempfile.mkdtemp(dir=TEMP_OUTPUT_DIR))
     
     try:
-        # 1. Encoder
+        # 1. Preparar Comando
         base_name = f"{temp_in.stem}_{encoder_type}"
         final_crs = output_dir / f"{base_name}.crs"
         script = ENCODER_SCRIPTS[encoder_type]
         
+        # --- LÓGICA DE AUTORÍA ---
+        # --author: Le pasamos el USUARIO (para que sea el dueño público/lentes)
+        # Los encoders internamente pondrán "NANO XTREMERTX 1.0" en el Q-DNA.
         cmd = [
             sys.executable, str(script),
             str(temp_in), base_name,
             "--crs_dir", str(output_dir),
             "--models_dir", str(MODELS_DIR),
-            "--author", username 
+            "--author", username,          # Lentes = Usuario
+            "--user_ip", user_ip,          # Inyección de Metadatos
+            "--user_location", location    # Inyección de Metadatos
         ]
+        
         if encoder_type == "perceptual": cmd.extend(["--fidelity_quality", "0"])
 
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
@@ -165,7 +152,7 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
             stderr = process.stderr.read()
             raise Exception(f"Fallo Encoder: {stderr[-200:]}")
 
-        # 2. Subida (Intento Doble)
+        # 2. Subida
         job['progress'] = 95
         input_size_mb = temp_in.stat().st_size / (1024*1024)
         final_size_mb = final_crs.stat().st_size / (1024*1024)
@@ -225,9 +212,8 @@ def start_conversion():
     encoder_type = request.form.get("encoderType", "perceptual")
     user_role = request.form.get("userRole", "user")
     location = request.form.get("location", "Desconocido")
-    user_ip = request.form.get("userIp", "0.0.0.0")
+    user_ip = request.form.get("userIp", "Unknown") # Recibimos la IP del frontend
 
-    # Permission Fail-Open
     allowed, reason = ask_permission(client_id)
     if not allowed: return jsonify({"success": False, "error": reason}), 429
 
@@ -249,7 +235,7 @@ def check_status(job_id):
     return jsonify(job), 200
 
 @app.route("/")
-def home(): return "S4 WORKER (V9.0 - DUAL UPLOAD)", 200
+def home(): return "S4 WORKER (V11.0 - QDNA CORRECTED)", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=7860)
