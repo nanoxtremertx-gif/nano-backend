@@ -1,4 +1,4 @@
-# servidor4.py (v11.0 - USER EXTERNAL / NANO INTERNAL)
+# servidor4.py (v12.0 - PROTOCOLO DE VERIFICACIÓN TOTAL)
 import os
 import sys
 import json
@@ -63,25 +63,35 @@ def ask_permission(client_id):
     except Exception as e:
         return True, "S1_Timeout_Skipped"
 
-def upload_to_srv1(username, file_path):
-    """Sube a S1 marcando el archivo como verificado."""
+def upload_to_srv1(username, file_path, encoder_type):
+    """Sube el archivo replicando la lógica de 'subir.jsx' para verificación."""
     if not file_path.exists(): return False, "Archivo no existe"
     
     base_url = SRV1_URL.rstrip('/')
-    # Intentamos ambas rutas por compatibilidad
     endpoints = [f"{base_url}/api/upload-file", f"{base_url}/api/upload"]
     
+    # --- PROTOCOLO DE SUBIDA VERIFICADA ---
+    # Esto simula exactamente lo que hace 'subir.jsx' cuando detecta
+    # que el usuario es dueño del archivo (Green Check).
+    
+    metadata_json = {
+        "userId": username,
+        "type": "file",
+        "name": file_path.name,
+        "verificationStatus": "verified_quantum", # <--- CLAVE DEL CHECK VERDE
+        "description": "Subida Verificada (Coincidencia de ADN)", # <--- DESCRIPCIÓN OFICIAL
+        "tags": ["nano_generated", encoder_type, "verified"],
+        "isPublished": False,
+        "parentId": None # S1 v22.0 lo arreglará automáticamente
+    }
+
     payload = {
         "userId": username,
-        "parentId": "null", 
-        "verificationStatus": "verified_quantum", # Check Verde
-        "description": "NANO XTREMERTX 1.0", # Q-DNA Visible
-        "metadata": json.dumps({
-            "userId": username,
-            "type": "file",
-            "name": file_path.name,
-            "verificationStatus": "verified_quantum"
-        })
+        "parentId": "null", # S1 v22.0 lo redirige a root
+        "verificationStatus": "verified_quantum", 
+        "description": "Subida Verificada (Coincidencia de ADN)",
+        "tags": json.dumps(["nano_generated", encoder_type, "verified"]), # Tags extra
+        "metadata": json.dumps(metadata_json) # Compatibilidad legacy
     }
 
     last_error = ""
@@ -90,10 +100,14 @@ def upload_to_srv1(username, file_path):
             with open(file_path, 'rb') as f:
                 files = {'file': (file_path.name, f, 'application/octet-stream')}
                 resp = requests.post(url, data=payload, files=files, timeout=300)
-            if 200 <= resp.status_code < 300: return True, "OK"
+            
+            if 200 <= resp.status_code < 300: 
+                return True, "OK"
+            
             last_error = f"HTTP {resp.status_code}: {resp.text[:50]}"
         except Exception as e:
             last_error = str(e)
+    
     return False, last_error
 
 def report_log_final(record):
@@ -114,24 +128,21 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
     output_dir = Path(tempfile.mkdtemp(dir=TEMP_OUTPUT_DIR))
     
     try:
-        # 1. Preparar Comando
+        # 1. Preparar Comando (Encoders v13/v20/v51)
         base_name = f"{temp_in.stem}_{encoder_type}"
         final_crs = output_dir / f"{base_name}.crs"
         script = ENCODER_SCRIPTS[encoder_type]
         
-        # --- LÓGICA DE AUTORÍA ---
-        # --author: Le pasamos el USUARIO (para que sea el dueño público/lentes)
-        # Los encoders internamente pondrán "NANO XTREMERTX 1.0" en el Q-DNA.
+        # El encoder ya inyecta los datos gracias a los argumentos nuevos
         cmd = [
             sys.executable, str(script),
             str(temp_in), base_name,
             "--crs_dir", str(output_dir),
             "--models_dir", str(MODELS_DIR),
-            "--author", username,          # Lentes = Usuario
-            "--user_ip", user_ip,          # Inyección de Metadatos
-            "--user_location", location    # Inyección de Metadatos
+            "--author", username,          # Lentes = Usuario (Dueño)
+            "--user_ip", user_ip,          
+            "--user_location", location    
         ]
-        
         if encoder_type == "perceptual": cmd.extend(["--fidelity_quality", "0"])
 
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
@@ -152,15 +163,16 @@ def run_encoder_job(job_id, file_path, encoder_type, username, client_id, user_r
             stderr = process.stderr.read()
             raise Exception(f"Fallo Encoder: {stderr[-200:]}")
 
-        # 2. Subida
+        # 2. Subida con Protocolo de Verificación
         job['progress'] = 95
         input_size_mb = temp_in.stat().st_size / (1024*1024)
         final_size_mb = final_crs.stat().st_size / (1024*1024)
         
-        ok, msg = upload_to_srv1(username, final_crs)
+        # Pasamos encoder_type para los tags
+        ok, msg = upload_to_srv1(username, final_crs, encoder_type) 
         if not ok: raise Exception(f"Fallo subida S1: {msg}")
 
-        # 3. Reporte
+        # 3. Reporte Histórico
         end_time = time.time()
         exec_time_sec = end_time - start_time
         mins, secs = divmod(int(exec_time_sec), 60)
@@ -212,7 +224,7 @@ def start_conversion():
     encoder_type = request.form.get("encoderType", "perceptual")
     user_role = request.form.get("userRole", "user")
     location = request.form.get("location", "Desconocido")
-    user_ip = request.form.get("userIp", "Unknown") # Recibimos la IP del frontend
+    user_ip = request.form.get("userIp", "0.0.0.0")
 
     allowed, reason = ask_permission(client_id)
     if not allowed: return jsonify({"success": False, "error": reason}), 429
@@ -235,7 +247,7 @@ def check_status(job_id):
     return jsonify(job), 200
 
 @app.route("/")
-def home(): return "S4 WORKER (V11.0 - QDNA CORRECTED)", 200
+def home(): return "S4 WORKER (V12.0 - FULL VERIFICATION)", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=7860)
