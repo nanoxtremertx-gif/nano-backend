@@ -1,31 +1,18 @@
-# --- servidor3.py (V3.0 - ANALIZADOR DE METADATOS CRS) ---
+# --- servidor3.py (V3.1 - ANALIZADOR CRS FIABLE) ---
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import pickle
-import sys
 import io
 
 # ===============================================================
-# 🔹 CONFIGURACIÓN BÁSICA
-# ===============================================================
-app = Flask(__name__)
-# Permitimos archivos grandes (aunque el CRS sea pequeño, el input puede ser grande)
-app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024 
-CORS(app, resources={r"/*": {"origins": "*"}})
-
-# Directorio Temporal para el archivo subido
-TEMP_DIR = os.path.join(os.getcwd(), 'temp_analysis')
-os.makedirs(TEMP_DIR, exist_ok=True)
-
-
-# ===============================================================
-# 🧠 LÓGICA DE ANÁLISIS (Basada en vcore_analisis.py)
+# 🧠 LÓGICA DE ANÁLISIS (Idéntica a vcore_analisis.py)
 # ===============================================================
 
 def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
     """
-    Lee y analiza los metadatos de un archivo .crs directamente desde los bytes.
+    Lee y analiza los metadatos de un archivo .crs desde sus bytes.
+    Esta lógica es el 'v core analysis' solicitado.
     """
     results = {
         "is_encrypted": True,
@@ -41,7 +28,6 @@ def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
     try:
         outer_data = pickle.loads(file_bytes)
 
-        # Extracción de metadatos públicos
         results['public_fingerprint'] = outer_data.get('public_author', 'No hay dato')
         results['creation_date'] = outer_data.get('created_at', 'No hay dato')
         results['password_mode'] = outer_data.get('password_mode', 'No hay dato')
@@ -49,14 +35,12 @@ def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
 
         crs_data = None
         
-        # Determinar si está cifrado
         if isinstance(outer_data, dict) and outer_data.get('is_encrypted', False):
             results['is_encrypted'] = True
         else:
             results['is_encrypted'] = False
             crs_data = outer_data
 
-        # Extracción de metadatos internos (solo si no está cifrado)
         if crs_data and isinstance(crs_data, dict):
             results['author_q_dna'] = crs_data.get('author') or crs_data.get('author_id') or 'No hay dato'
             results['fidelity_quality'] = crs_data.get('fidelity_quality', 'No hay dato')
@@ -74,55 +58,64 @@ def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
             else:
                 results['creation_module'] = "Desconocido (Legacy/Otro)"
         
-        # Si está cifrado, se mantienen los valores 'No aplica (Encriptado)'
-        
     except pickle.UnpicklingError:
         raise ValueError("El archivo CRS está corrupto o no es un formato pickle válido.")
     except Exception as e:
-        # Aquí puedes capturar otros errores de deserialización o estructura.
         raise RuntimeError(f"Error crítico al analizar la estructura del archivo: {e}")
 
     return results
 
+# ===============================================================
+# 🏭 FUNCIÓN FÁBRICA Y RUTAS
+# ===============================================================
+
+def create_app():
+    """Define la aplicación Flask para que Gunicorn la pueda inicializar."""
+    app = Flask(__name__)
+    app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024 
+    CORS(app, resources={r"/*": {"origins": "*"}})
+
+    @app.route('/health', methods=['GET'])
+    def health_check():
+        return "ANALYZER ONLINE (S3)", 200
+
+    @app.route('/analyze-crs-metadata', methods=['POST'])
+    def handle_analysis_request():
+        """Toma el CRS, ejecuta el análisis y devuelve los metadatos."""
+        if 'file' not in request.files:
+            return jsonify({"success": False, "error": "No se proporcionó el archivo 'file'"}), 400
+            
+        file = request.files['file']
+        
+        try:
+            file_bytes = file.read()
+            results = analyze_crs_from_bytes(file_bytes)
+            
+            # Limpiar el output para el JSON final
+            if results['is_encrypted']:
+                results['author_q_dna'] = None
+                results['fidelity_quality'] = None
+                results['creation_module'] = "Encriptado"
+            else:
+                 results['author_q_dna'] = results.get('author_q_dna')
+
+            return jsonify({"success": True, "analysis": results}), 200
+            
+        except ValueError as e:
+            # Archivo corrupto
+            return jsonify({"success": False, "error": str(e)}), 406
+        except RuntimeError as e:
+            # Error de servidor
+            return jsonify({"success": False, "error": str(e)}), 500
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Error inesperado en el servidor: {str(e)}"}), 500
+
+    return app
 
 # ===============================================================
-# 🚀 RUTAS API
+# 🚀 PUNTO DE ENTRADA
 # ===============================================================
-
-@app.route('/analyze-crs-metadata', methods=['POST'])
-def handle_analysis_request():
-    """Recibe un archivo .crs y devuelve sus metadatos de creación."""
-    if 'file' not in request.files:
-        return jsonify({"success": False, "error": "No se proporcionó el archivo 'file'"}), 400
-        
-    file = request.files['file']
-    
-    try:
-        file_bytes = file.read()
-        results = analyze_crs_from_bytes(file_bytes)
-        
-        # Convertir 'No aplica (Encriptado)' a None si se desea un JSON más limpio
-        if results['is_encrypted']:
-            results['author_q_dna'] = None
-            results['fidelity_quality'] = None
-            results['creation_module'] = "Encriptado"
-        else:
-             # Asegurarse de que el Q-DNA esté en el resultado final
-             results['author_q_dna'] = results.get('author_q_dna')
-
-        return jsonify({"success": True, "analysis": results}), 200
-        
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 406 # Not Acceptable
-    except RuntimeError as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-    except Exception as e:
-        return jsonify({"success": False, "error": f"Error inesperado en el servidor: {str(e)}"}), 500
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    return "ANALYZER ONLINE (S3)", 200
-
 if __name__ == '__main__':
-    # Usar el puerto 7860 directamente
+    # Esto es solo para pruebas locales; Gunicorn usa create_app()
+    app = create_app()
     app.run(host='0.0.0.0', port=7860)
