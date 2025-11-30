@@ -124,6 +124,5 @@ def health_check():
     return "ANALYZER ONLINE (S3)", 200
 
 if __name__ == '__main__':
-    # Usar un puerto diferente de 7860 para evitar conflicto con S1/S2/S4 si corren en el mismo host
-    # Hugging Face Spaces asignará 7860 automáticamente en producción.
-    app.run(host='0.0.0.0', port=5003)
+    # Usar el puerto 7860 directamente
+    app.run(host='0.0.0.0', port=7860)
