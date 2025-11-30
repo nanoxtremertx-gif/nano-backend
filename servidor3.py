@@ -64,7 +64,7 @@ def analyze_crs_from_stream(file_stream) -> dict:
     except pickle.UnpicklingError:
         raise ValueError("Archivo CRS corrupto o no es un formato pickle válido.")
     except Exception as e:
-        # Aquí capturamos cualquier otro fallo inesperado
+        # Fallo de lectura/procesamiento genérico.
         print(f"Fallo crítico interno: {e}", file=sys.stderr)
         raise RuntimeError(f"Fallo crítico al leer el archivo.")
 
@@ -91,13 +91,10 @@ def handle_crs_analysis():
         return jsonify({"success": True, **analysis_results}), 200
 
     except ValueError as ve:
-        # 5. Captura errores de formato (pickle inválido)
         return jsonify({"success": False, "error": str(ve)}), 400
     except RuntimeError as re:
-        # 6. Captura errores internos específicos
         return jsonify({"success": False, "error": str(re)}), 500
     except Exception as e:
-        # 7. Captura cualquier otro error no manejado
         print(f"Error fatal no manejado: {e}", file=sys.stderr)
         return jsonify({"success": False, "error": "Fallo interno y crítico del servidor."}), 500
 
@@ -107,7 +104,4 @@ def handle_crs_analysis():
 def health_check():
     return jsonify({"status": "Servidor 3 ONLINE", "role": "Análisis CRS v1.2"}), 200
 
-# --- 5. Inicia el servidor al ejecutar el script ---
-if __name__ == '__main__':
-    print(">>> Servidor 3 iniciado en puerto 5002.")
-    app.run(host='0.0.0.0', port=5002, debug=False)
+# EL BLOQUE if __name__ == '__main__': DEBE SER ELIMINADO AQUÍ.
