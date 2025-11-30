@@ -84,9 +84,11 @@ def handle_crs_analysis():
         return jsonify({"success": False, "error": "Archivo no válido. Se esperaba un archivo .crs."}), 400
 
     try:
-        # FIX: Lectura completa del binario para evitar bloqueos del stream
-        file_bytes = file.read() 
-        analysis_results = analyze_crs_from_bytes(file_bytes)
+        # FIX: Leer el stream binario completo antes de pickle para evitar bloqueos
+        file_stream = io.BytesIO(file.read())
+        
+        # 3. Llama a la función de análisis
+        analysis_results = analyze_crs_from_stream(file_stream)
         
         # 4. Devuelve el resultado exitoso (Código 200 OK)
         return jsonify({"success": True, **analysis_results}), 200
@@ -105,8 +107,8 @@ def handle_crs_analysis():
 def health_check():
     return jsonify({"status": "Servidor 3 ONLINE", "role": "Análisis CRS v1.2"}), 200
 
-def analyze_crs_from_bytes(file_bytes):
-    # Función auxiliar para el FIX de bloqueo de pickle.
-    import io
-    # Usamos pickle.loads (con 's') para deserializar bytes en memoria
-    return analyze_crs_from_stream(io.BytesIO(file_bytes))
+# --- 5. Inicia el servidor al ejecutar el script ---
+if __name__ == '__main__':
+    print(">>> Servidor 3 iniciado en puerto 5002.")
+    # Este bloque es clave para el arranque directo de Python
+    app.run(host='0.0.0.0', port=5002, debug=False)
