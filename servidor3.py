@@ -1,4 +1,4 @@
-# servidor3.py (v1.2 - Servidor de Análisis de Metadatos CRS)
+# servidor3.py (v1.3 - FIX DE BLOQUEO DE PICKLE)
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pickle
@@ -7,14 +7,12 @@ import io
 
 # --- 1. Inicialización del servidor Flask ---
 app = Flask(__name__)
-# Permite CUALQUIER origen para CORS
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# --- 2. Lógica de Análisis (Adaptada para funcionar desde un stream en memoria) ---
-def analyze_crs_from_stream(file_stream) -> dict:
+# --- 2. Lógica de Análisis (Acepta bytes en memoria) ---
+def analyze_crs_from_bytes(file_bytes) -> dict:
     """
-    Lee y analiza los metadatos de un archivo .crs directamente desde un stream binario.
-    Retorna un diccionario con los resultados.
+    Lee y analiza los metadatos de un archivo .crs desde un buffer de bytes.
     """
     results = {
         "id_fingerprint": "No disponible",
@@ -25,8 +23,8 @@ def analyze_crs_from_stream(file_stream) -> dict:
     }
 
     try:
-        # Intenta cargar los datos del stream usando pickle.
-        outer_data = pickle.load(file_stream)
+        # FIX CRÍTICO: Usar pickle.loads para deserializar bytes en memoria
+        outer_data = pickle.loads(file_bytes)
 
         # 1. Extracción de Fingerprint de nivel superior
         results['id_fingerprint'] = outer_data.get('public_author', 'No disponible')
@@ -39,7 +37,6 @@ def analyze_crs_from_stream(file_stream) -> dict:
             results['creation_module'] = "N/A (Encriptado)"
             results['technical_version'] = outer_data.get('version_id', 'N/A (Encriptado)')
         else:
-            # 3. Si no está encriptado, los datos internos son el objeto principal
             crs_data = outer_data
 
         if crs_data and isinstance(crs_data, dict):
@@ -54,7 +51,6 @@ def analyze_crs_from_stream(file_stream) -> dict:
             elif "Generalista" in version:
                 results['creation_module'] = "Ultra Visual (Generalista)"
             else:
-                # Perceptual (Kiphu+Odin)
                 fidelity = crs_data.get('fidelity_quality')
                 if fidelity is not None:
                     results['creation_module'] = f"Perceptual (Fidelidad WebP: {fidelity}%)"
@@ -64,7 +60,6 @@ def analyze_crs_from_stream(file_stream) -> dict:
     except pickle.UnpicklingError:
         raise ValueError("Archivo CRS corrupto o no es un formato pickle válido.")
     except Exception as e:
-        # Fallo de lectura/procesamiento genérico.
         print(f"Fallo crítico interno: {e}", file=sys.stderr)
         raise RuntimeError(f"Fallo crítico al leer el archivo.")
 
@@ -73,19 +68,20 @@ def analyze_crs_from_stream(file_stream) -> dict:
 # --- 3. Definición de la Ruta de la API (/analyze-crs-metadata) ---
 @app.route('/analyze-crs-metadata', methods=['POST'])
 def handle_crs_analysis():
-    # 1. Valida que se haya enviado un archivo
     if 'file' not in request.files:
         return jsonify({"success": False, "error": "No se ha enviado ningún archivo."}), 400
     
     file = request.files['file']
     
-    # 2. Valida la extensión
     if file.filename == '' or not file.filename.lower().endswith('.crs'):
         return jsonify({"success": False, "error": "Archivo no válido. Se esperaba un archivo .crs."}), 400
 
     try:
-        # 3. Llama a la función de análisis, pasando el stream binario
-        analysis_results = analyze_crs_from_stream(file.stream)
+        # ** FIX CRÍTICO: LEER TODO EL BINARIO DEL STREAM DE RED **
+        file_bytes = file.read() 
+        
+        # 3. Llama a la función de análisis
+        analysis_results = analyze_crs_from_bytes(file_bytes)
         
         # 4. Devuelve el resultado exitoso (Código 200 OK)
         return jsonify({"success": True, **analysis_results}), 200
@@ -102,10 +98,4 @@ def handle_crs_analysis():
 # --- 4. Ruta de Salud (Health Check) ---
 @app.route('/')
 def health_check():
-    return jsonify({"status": "Servidor 3 ONLINE", "role": "Análisis CRS v1.2"}), 200
-
-# --- 5. Inicia el servidor al ejecutar el script ---
-if __name__ == '__main__':
-    print(">>> Servidor 3 iniciado en puerto 5002.")
-    # Este bloque es clave para el arranque directo de Python
-    app.run(host='0.0.0.0', port=5002, debug=False)
+    return jsonify({"status": "Servidor 3 ONLINE", "role": "Análisis CRS v1.3"}), 200
