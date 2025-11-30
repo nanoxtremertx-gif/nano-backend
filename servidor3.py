@@ -1,4 +1,4 @@
-# servidor3.py (v1.3 - FIX DE BLOQUEO DE PICKLE)
+# servidor3.py (v1.2 - Servidor de Análisis de Metadatos CRS)
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pickle
@@ -7,12 +7,14 @@ import io
 
 # --- 1. Inicialización del servidor Flask ---
 app = Flask(__name__)
+# Permite CUALQUIER origen para CORS
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# --- 2. Lógica de Análisis (Acepta bytes en memoria) ---
-def analyze_crs_from_bytes(file_bytes) -> dict:
+# --- 2. Lógica de Análisis (Adaptada para funcionar desde un stream en memoria) ---
+def analyze_crs_from_stream(file_stream) -> dict:
     """
-    Lee y analiza los metadatos de un archivo .crs desde un buffer de bytes.
+    Lee y analiza los metadatos de un archivo .crs directamente desde un stream binario.
+    Retorna un diccionario con los resultados.
     """
     results = {
         "id_fingerprint": "No disponible",
@@ -23,8 +25,8 @@ def analyze_crs_from_bytes(file_bytes) -> dict:
     }
 
     try:
-        # FIX CRÍTICO: Usar pickle.loads para deserializar bytes en memoria
-        outer_data = pickle.loads(file_bytes)
+        # Intenta cargar los datos del stream usando pickle.
+        outer_data = pickle.load(file_stream)
 
         # 1. Extracción de Fingerprint de nivel superior
         results['id_fingerprint'] = outer_data.get('public_author', 'No disponible')
@@ -37,6 +39,7 @@ def analyze_crs_from_bytes(file_bytes) -> dict:
             results['creation_module'] = "N/A (Encriptado)"
             results['technical_version'] = outer_data.get('version_id', 'N/A (Encriptado)')
         else:
+            # 3. Si no está encriptado, los datos internos son el objeto principal
             crs_data = outer_data
 
         if crs_data and isinstance(crs_data, dict):
@@ -51,6 +54,7 @@ def analyze_crs_from_bytes(file_bytes) -> dict:
             elif "Generalista" in version:
                 results['creation_module'] = "Ultra Visual (Generalista)"
             else:
+                # Perceptual (Kiphu+Odin)
                 fidelity = crs_data.get('fidelity_quality')
                 if fidelity is not None:
                     results['creation_module'] = f"Perceptual (Fidelidad WebP: {fidelity}%)"
@@ -60,6 +64,7 @@ def analyze_crs_from_bytes(file_bytes) -> dict:
     except pickle.UnpicklingError:
         raise ValueError("Archivo CRS corrupto o no es un formato pickle válido.")
     except Exception as e:
+        # Fallo de lectura/procesamiento genérico.
         print(f"Fallo crítico interno: {e}", file=sys.stderr)
         raise RuntimeError(f"Fallo crítico al leer el archivo.")
 
@@ -68,19 +73,19 @@ def analyze_crs_from_bytes(file_bytes) -> dict:
 # --- 3. Definición de la Ruta de la API (/analyze-crs-metadata) ---
 @app.route('/analyze-crs-metadata', methods=['POST'])
 def handle_crs_analysis():
+    # 1. Valida que se haya enviado un archivo
     if 'file' not in request.files:
         return jsonify({"success": False, "error": "No se ha enviado ningún archivo."}), 400
     
     file = request.files['file']
     
+    # 2. Valida la extensión
     if file.filename == '' or not file.filename.lower().endswith('.crs'):
         return jsonify({"success": False, "error": "Archivo no válido. Se esperaba un archivo .crs."}), 400
 
     try:
-        # ** FIX CRÍTICO: LEER TODO EL BINARIO DEL STREAM DE RED **
+        # FIX: Lectura completa del binario para evitar bloqueos del stream
         file_bytes = file.read() 
-        
-        # 3. Llama a la función de análisis
         analysis_results = analyze_crs_from_bytes(file_bytes)
         
         # 4. Devuelve el resultado exitoso (Código 200 OK)
@@ -98,4 +103,10 @@ def handle_crs_analysis():
 # --- 4. Ruta de Salud (Health Check) ---
 @app.route('/')
 def health_check():
-    return jsonify({"status": "Servidor 3 ONLINE", "role": "Análisis CRS v1.3"}), 200
+    return jsonify({"status": "Servidor 3 ONLINE", "role": "Análisis CRS v1.2"}), 200
+
+def analyze_crs_from_bytes(file_bytes):
+    # Función auxiliar para el FIX de bloqueo de pickle.
+    import io
+    # Usamos pickle.loads (con 's') para deserializar bytes en memoria
+    return analyze_crs_from_stream(io.BytesIO(file_bytes))
