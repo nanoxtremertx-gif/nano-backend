@@ -14,6 +14,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 def analyze_crs_from_stream(file_stream) -> dict:
     """
     Lee y analiza los metadatos de un archivo .crs directamente desde un stream binario.
+    Retorna un diccionario con los resultados.
     """
     results = {
         "id_fingerprint": "No disponible",
@@ -102,3 +103,9 @@ def handle_crs_analysis():
 @app.route('/')
 def health_check():
     return jsonify({"status": "Servidor 3 ONLINE", "role": "Análisis CRS v1.2"}), 200
+
+# --- 5. Inicia el servidor al ejecutar el script ---
+if __name__ == '__main__':
+    print(">>> Servidor 3 iniciado en puerto 5002.")
+    # Este bloque es clave para el arranque directo de Python
+    app.run(host='0.0.0.0', port=5002, debug=False)
