@@ -7,7 +7,7 @@ import io
 
 # --- 1. Inicialización del servidor Flask ---
 app = Flask(__name__)
-# Estandarizado con servidor2.py y servidor.py: Permite CUALQUIER origen.
+# Permite CUALQUIER origen para CORS
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # --- 2. Lógica de Análisis (Adaptada para funcionar desde un stream en memoria) ---
@@ -26,7 +26,6 @@ def analyze_crs_from_stream(file_stream) -> dict:
 
     try:
         # Intenta cargar los datos del stream usando pickle.
-        # Es vital que el stream no se cierre hasta que se haya leído.
         outer_data = pickle.load(file_stream)
 
         # 1. Extracción de Fingerprint de nivel superior
@@ -97,8 +96,9 @@ def handle_crs_analysis():
     except RuntimeError as re:
         # 6. Captura errores internos específicos
         return jsonify({"success": False, "error": str(re)}), 500
-    except Exception:
+    except Exception as e:
         # 7. Captura cualquier otro error no manejado
+        print(f"Error fatal no manejado: {e}", file=sys.stderr)
         return jsonify({"success": False, "error": "Fallo interno y crítico del servidor."}), 500
 
 
@@ -109,6 +109,5 @@ def health_check():
 
 # --- 5. Inicia el servidor al ejecutar el script ---
 if __name__ == '__main__':
-    # Puerto 5002 (El puerto estándar para este servicio, según tu iniciador.py)
-    print(">>> Servidor 3 iniciado en puerto 5002. Esperando peticiones...")
+    print(">>> Servidor 3 iniciado en puerto 5002.")
     app.run(host='0.0.0.0', port=5002, debug=False)
