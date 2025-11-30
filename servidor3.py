@@ -103,5 +103,3 @@ def handle_crs_analysis():
 @app.route('/')
 def health_check():
     return jsonify({"status": "Servidor 3 ONLINE", "role": "Análisis CRS v1.2"}), 200
-
-# EL BLOQUE if __name__ == '__main__': DEBE SER ELIMINADO AQUÍ.
