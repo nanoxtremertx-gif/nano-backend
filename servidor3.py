@@ -1,19 +1,20 @@
-# --- servidor3.py (V3.1 - ANALIZADOR CRS FIABLE) ---
+# --- servidor3.py (V3.2 - ANALIZADOR CRS FIABLE FINAL) ---
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import pickle
 import io
+import sys
 
 # ===============================================================
-# 🧠 LÓGICA DE ANÁLISIS (Idéntica a vcore_analisis.py)
+# 🧠 LÓGICA DE ANÁLISIS (Basada en vcore_analisis.py)
 # ===============================================================
 
 def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
     """
     Lee y analiza los metadatos de un archivo .crs desde sus bytes.
-    Esta lógica es el 'v core analysis' solicitado.
     """
+    # ... (Tu lógica de análisis, se mantiene igual a la última versión) ...
     results = {
         "is_encrypted": True,
         "public_fingerprint": "No hay dato",
@@ -65,8 +66,9 @@ def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
 
     return results
 
+
 # ===============================================================
-# 🏭 FUNCIÓN FÁBRICA Y RUTAS
+# 🏭 FUNCIÓN FÁBRICA (GARANTIZA EL ARRANQUE DE GUNICORN)
 # ===============================================================
 
 def create_app():
@@ -75,13 +77,13 @@ def create_app():
     app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024 
     CORS(app, resources={r"/*": {"origins": "*"}})
 
+    # --- RUTAS ---
     @app.route('/health', methods=['GET'])
     def health_check():
         return "ANALYZER ONLINE (S3)", 200
 
     @app.route('/analyze-crs-metadata', methods=['POST'])
     def handle_analysis_request():
-        """Toma el CRS, ejecuta el análisis y devuelve los metadatos."""
         if 'file' not in request.files:
             return jsonify({"success": False, "error": "No se proporcionó el archivo 'file'"}), 400
             
@@ -102,10 +104,8 @@ def create_app():
             return jsonify({"success": True, "analysis": results}), 200
             
         except ValueError as e:
-            # Archivo corrupto
             return jsonify({"success": False, "error": str(e)}), 406
         except RuntimeError as e:
-            # Error de servidor
             return jsonify({"success": False, "error": str(e)}), 500
         except Exception as e:
             return jsonify({"success": False, "error": f"Error inesperado en el servidor: {str(e)}"}), 500
@@ -116,6 +116,6 @@ def create_app():
 # 🚀 PUNTO DE ENTRADA
 # ===============================================================
 if __name__ == '__main__':
-    # Esto es solo para pruebas locales; Gunicorn usa create_app()
+    # Usar un servidor simple para pruebas locales
     app = create_app()
     app.run(host='0.0.0.0', port=7860)
