@@ -14,7 +14,6 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 def analyze_crs_from_stream(file_stream) -> dict:
     """
     Lee y analiza los metadatos de un archivo .crs directamente desde un stream binario.
-    Retorna un diccionario con los resultados.
     """
     results = {
         "id_fingerprint": "No disponible",
