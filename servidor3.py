@@ -1,4 +1,4 @@
-# --- servidor3.py (V3.4 - ARRANQUE GARANTIZADO con Uvicorn) ---
+# --- servidor3.py (V3.5 - ARRANQUE GARANTIZADO) ---
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
@@ -66,10 +66,10 @@ def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
     return results
 
 # ===============================================================
-# 🚀 OBJETO GLOBAL DE LA APLICACIÓN (Solución al error de módulo)
+# 🚀 OBJETO GLOBAL DE LA APLICACIÓN (Requiere Gunicorn)
 # ===============================================================
 
-# La variable 'app' debe estar definida globalmente para que Uvicorn la encuentre.
+# La variable 'app' debe estar definida globalmente para que Gunicorn la encuentre.
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024 
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -91,7 +91,6 @@ def handle_analysis_request():
         file_bytes = file.read()
         results = analyze_crs_from_bytes(file_bytes)
         
-        # Limpiar el output para el JSON final
         if results['is_encrypted']:
             results['author_q_dna'] = None
             results['fidelity_quality'] = None
@@ -108,5 +107,4 @@ def handle_analysis_request():
     except Exception as e:
         return jsonify({"success": False, "error": f"Error inesperado en el servidor: {str(e)}"}), 500
 
-# NO USAR if __name__ == '__main__':
-# Uvicorn ejecutará el objeto 'app' directamente.
+# NOTA: NO USAR if __name__ == '__main__': o app.run() en el código final de GitHub.
