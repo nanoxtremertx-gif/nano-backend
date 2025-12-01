@@ -1,4 +1,4 @@
-# --- servidor3.py (V3.5 - ARRANQUE GARANTIZADO) ---
+# --- servidor3.py (V3.6 - ARRANQUE GARANTIZADO) ---
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
@@ -106,5 +106,3 @@ def handle_analysis_request():
         return jsonify({"success": False, "error": str(e)}), 500
     except Exception as e:
         return jsonify({"success": False, "error": f"Error inesperado en el servidor: {str(e)}"}), 500
-
-# NOTA: NO USAR if __name__ == '__main__': o app.run() en el código final de GitHub.
