@@ -1,4 +1,4 @@
-# --- servidor3.py (V3.6 - ARRANQUE GARANTIZADO) ---
+# --- servidor3.py (V3.7 - ARRANQUE GARANTIZADO) ---
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
@@ -7,7 +7,7 @@ import io
 import sys
 
 # ===============================================================
-# 🧠 LÓGICA DE ANÁLISIS (Basada en vcore_analisis.py)
+# 🧠 LÓGICA DE ANÁLISIS 
 # ===============================================================
 
 def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
@@ -66,10 +66,10 @@ def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
     return results
 
 # ===============================================================
-# 🚀 OBJETO GLOBAL DE LA APLICACIÓN (Requiere Gunicorn)
+# 🚀 OBJETO GLOBAL DE LA APLICACIÓN (PARA GUNICORN)
 # ===============================================================
 
-# La variable 'app' debe estar definida globalmente para que Gunicorn la encuentre.
+# La variable 'app' debe estar definida globalmente.
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024 
 CORS(app, resources={r"/*": {"origins": "*"}})
