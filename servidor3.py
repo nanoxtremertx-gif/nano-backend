@@ -1,4 +1,4 @@
-# --- servidor3.py (V3.9 - FIX DE DESERIALIZACIÓN Y MAPPING DE CLAVES) ---
+# --- servidor3.py (V3.10 - FIX DE CLAVES JSON) ---
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import os
@@ -12,8 +12,7 @@ import sys
 
 def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
     """
-    Lee y analiza los metadatos de un archivo .crs desde sus bytes, 
-    con manejo de errores de deserialización más robusto.
+    Lee y analiza los metadatos de un archivo .crs desde sus bytes.
     """
     results = {
         "is_encrypted": True,
@@ -36,11 +35,9 @@ def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
         outer_data = pickle.loads(file_bytes)
 
     except pickle.UnpicklingError:
-        # Error de formato
         raise ValueError("Error de formato: El archivo CRS está corrupto o no es un formato pickle válido.")
         
     except Exception as e:
-        # Error de sistema (memoria/recursión)
         sys.stderr.write(f"ERROR CRÍTICO DE PICKLE: {e}\n")
         raise RuntimeError(f"Error de sistema: No se pudo deserializar el archivo.")
 
@@ -78,7 +75,6 @@ def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
                 results['creation_module'] = "Desconocido (Legacy/Otro)"
         
     except Exception as e:
-        # Este error ocurre si la ESTRUCTURA INTERNA no es la esperada (metadatos faltantes)
         raise RuntimeError(f"Error en metadatos internos: {e}")
 
     return results
@@ -96,7 +92,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 @app.route('/', methods=['GET'])
 def home():
     """Confirma que la aplicación está corriendo en la raíz."""
-    return jsonify({"status": "V Core Analyzer ONLINE", "api_version": "3.9"}), 200
+    return jsonify({"status": "V Core Analyzer ONLINE", "api_version": "3.10"}), 200
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -113,8 +109,6 @@ def handle_analysis_request():
         file_bytes = file.read()
         results = analyze_crs_from_bytes(file_bytes)
         
-        # --- Mapear la salida del análisis a las claves que el frontend espera ---
-        
         # 1. Limpieza de datos encriptados
         is_encrypted = results['is_encrypted']
         if is_encrypted:
@@ -126,14 +120,13 @@ def handle_analysis_request():
             creation_module = results['creation_module']
             fidelity_quality = results.get('fidelity_quality')
 
-        # 2. Devolver la respuesta con el mapeo EXACTO del frontend
+        # 2. Devolver la respuesta usando las claves ORIGINALES de Python (SOLUCIÓN)
         return jsonify({
             "success": True, 
             "analysis": {
-                # MAPPING CRÍTICO para misarchivos.jsx:
-                "id_fingerprint": results['public_fingerprint'], 
-                "q_dna": q_dna,               
-                "technical_version": results['version_id'],      
+                "public_fingerprint": results['public_fingerprint'], 
+                "author_q_dna": q_dna,               
+                "version_id": results['version_id'],      
                 "is_encrypted": is_encrypted,
                 "creation_module": creation_module,
                 "fidelity_quality": fidelity_quality
@@ -141,16 +134,13 @@ def handle_analysis_request():
         }), 200
         
     except ValueError as e:
-        # Error de archivo corrupto o vacío (reporte 406)
         sys.stderr.write(f"ERROR 406: {e}\n")
         return jsonify({"success": False, "error": str(e)}), 406
     
     except RuntimeError as e:
-        # Error de estructura interna (reporte 500)
         sys.stderr.write(f"ERROR 500: {e}\n")
         return jsonify({"success": False, "error": f"Falla Interna del Analizador: {str(e)}"}), 500
     
     except Exception as e:
-        # Cualquier otra excepción no capturada
         sys.stderr.write(f"ERROR INESPERADO: {e}\n")
         return jsonify({"success": False, "error": "Error inesperado en el servidor."}), 500
