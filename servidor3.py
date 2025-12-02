@@ -1,5 +1,5 @@
-# --- servidor3.py (V3.8 - FINAL CON RUTA RAÍZ) ---
-from flask import Flask, jsonify, request
+# --- servidor3.py (V3.7 - ARRANQUE GARANTIZADO) ---
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import pickle
@@ -13,7 +13,6 @@ import sys
 def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
     """
     Lee y analiza los metadatos de un archivo .crs desde sus bytes.
-    (La lógica interna de tu vcore_analisis.py)
     """
     results = {
         "is_encrypted": True,
@@ -70,6 +69,7 @@ def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
 # 🚀 OBJETO GLOBAL DE LA APLICACIÓN (PARA GUNICORN)
 # ===============================================================
 
+# La variable 'app' debe estar definida globalmente para que Gunicorn la encuentre.
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024 
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -87,17 +87,12 @@ def health_check():
 
 @app.route('/analyze-crs-metadata', methods=['POST'])
 def handle_analysis_request():
-    """
-    Recibe el archivo CRS (como lo haría Servidor 2) y ejecuta el análisis.
-    """
     if 'file' not in request.files:
         return jsonify({"success": False, "error": "No se proporcionó el archivo 'file'"}), 400
         
     file = request.files['file']
     
     try:
-        # El frontend ya descarga el archivo y lo envía como multipart/form-data
-        # Simplemente leemos los bytes y analizamos.
         file_bytes = file.read()
         results = analyze_crs_from_bytes(file_bytes)
         
