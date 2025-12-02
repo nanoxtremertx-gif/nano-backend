@@ -1,10 +1,11 @@
-# --- servidor3.py (V3.7 - ARRANQUE GARANTIZADO) ---
-from flask import Flask, request, jsonify
+# --- servidor3.py (V3.9 - FIX DE DESERIALIZACIÓN Y ARRANQUE) ---
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import os
 import pickle
 import io
 import sys
+import json # Necesario para debugging
 
 # ===============================================================
 # 🧠 LÓGICA DE ANÁLISIS (vcore_analisis)
@@ -12,7 +13,8 @@ import sys
 
 def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
     """
-    Lee y analiza los metadatos de un archivo .crs desde sus bytes.
+    Lee y analiza los metadatos de un archivo .crs desde sus bytes, 
+    con manejo de errores de deserialización más robusto.
     """
     results = {
         "is_encrypted": True,
@@ -25,9 +27,26 @@ def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
         "fidelity_quality": "No aplica (Encriptado)"
     }
 
+    if not file_bytes:
+        # Debugging: El archivo llegó vacío o nulo
+        raise ValueError("Error: Archivo de entrada vacío o corrupto (0 bytes).")
+
     try:
+        # Intento de deserialización principal
         outer_data = pickle.loads(file_bytes)
 
+    except pickle.UnpicklingError:
+        # Este error ocurre si la estructura no es un objeto Python válido (e.g., binario corrupto)
+        raise ValueError("Error de formato: El archivo CRS está corrupto o no es un formato pickle válido.")
+        
+    except Exception as e:
+        # Captura otros errores de pickle, como límites de recursión o problemas de versión
+        sys.stderr.write(f"ERROR CRÍTICO DE PICKLE: {e}\n")
+        raise RuntimeError(f"Error de sistema: No se pudo deserializar el archivo.")
+
+
+    # --- LÓGICA DE EXTRACCIÓN (Si la deserialización fue exitosa) ---
+    try:
         results['public_fingerprint'] = outer_data.get('public_author', 'No hay dato')
         results['creation_date'] = outer_data.get('created_at', 'No hay dato')
         results['password_mode'] = outer_data.get('password_mode', 'No hay dato')
@@ -58,10 +77,9 @@ def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
             else:
                 results['creation_module'] = "Desconocido (Legacy/Otro)"
         
-    except pickle.UnpicklingError:
-        raise ValueError("El archivo CRS está corrupto o no es un formato pickle válido.")
     except Exception as e:
-        raise RuntimeError(f"Error crítico al analizar la estructura del archivo: {e}")
+        # Este error ocurre si la ESTRUCTURA INTERNA no es la esperada (metadatos faltantes)
+        raise RuntimeError(f"Error en metadatos internos: {e}")
 
     return results
 
@@ -69,7 +87,6 @@ def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
 # 🚀 OBJETO GLOBAL DE LA APLICACIÓN (PARA GUNICORN)
 # ===============================================================
 
-# La variable 'app' debe estar definida globalmente para que Gunicorn la encuentre.
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024 
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -79,7 +96,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 @app.route('/', methods=['GET'])
 def home():
     """Confirma que la aplicación está corriendo en la raíz."""
-    return jsonify({"status": "V Core Analyzer ONLINE", "api_version": "3.8"}), 200
+    return jsonify({"status": "V Core Analyzer ONLINE", "api_version": "3.9"}), 200
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -88,26 +105,39 @@ def health_check():
 @app.route('/analyze-crs-metadata', methods=['POST'])
 def handle_analysis_request():
     if 'file' not in request.files:
+        # Esto no debería pasar si el frontend usa FormData
         return jsonify({"success": False, "error": "No se proporcionó el archivo 'file'"}), 400
         
     file = request.files['file']
     
     try:
+        # 1. Ejecutar la lógica de análisis robusta
         file_bytes = file.read()
         results = analyze_crs_from_bytes(file_bytes)
         
+        # 2. Formatear la salida para el JSON
         if results['is_encrypted']:
+            # Simplificar los valores para que el frontend no los muestre
             results['author_q_dna'] = None
             results['fidelity_quality'] = None
             results['creation_module'] = "Encriptado"
         else:
             results['author_q_dna'] = results.get('author_q_dna')
 
+        # 3. Devolver la respuesta de éxito
         return jsonify({"success": True, "analysis": results}), 200
         
     except ValueError as e:
+        # Error de archivo corrupto o vacío (reporte 406)
+        sys.stderr.write(f"ERROR 406: {e}\n")
         return jsonify({"success": False, "error": str(e)}), 406
+    
     except RuntimeError as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        # Error de sistema (reporte 500)
+        sys.stderr.write(f"ERROR 500: {e}\n")
+        return jsonify({"success": False, "error": f"Falla Interna del Analizador: {str(e)}"}), 500
+    
     except Exception as e:
-        return jsonify({"success": False, "error": f"Error inesperado en el servidor: {str(e)}"}), 500
+        # Cualquier otra excepción no capturada
+        sys.stderr.write(f"ERROR INESPERADO: {e}\n")
+        return jsonify({"success": False, "error": "Error inesperado en el servidor."}), 500
