@@ -1,5 +1,5 @@
-# --- servidor3.py (V3.7 - ARRANQUE GARANTIZADO) ---
-from flask import Flask, request, jsonify
+# --- servidor3.py (V3.8 - FIX DE ARRANQUE Y RUTA RAÍZ) ---
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import os
 import pickle
@@ -7,7 +7,7 @@ import io
 import sys
 
 # ===============================================================
-# 🧠 LÓGICA DE ANÁLISIS 
+# 🧠 LÓGICA DE ANÁLISIS (Basada en vcore_analisis.py)
 # ===============================================================
 
 def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
@@ -69,12 +69,17 @@ def analyze_crs_from_bytes(file_bytes: bytes) -> dict:
 # 🚀 OBJETO GLOBAL DE LA APLICACIÓN (PARA GUNICORN)
 # ===============================================================
 
-# La variable 'app' debe estar definida globalmente.
+# La variable 'app' debe estar definida globalmente para que Gunicorn la encuentre.
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024 
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # --- RUTAS ---
+
+@app.route('/', methods=['GET'])
+def home():
+    """Confirma que la aplicación está corriendo en la raíz."""
+    return jsonify({"status": "V Core Analyzer ONLINE", "api_version": "3.8"}), 200
 
 @app.route('/health', methods=['GET'])
 def health_check():
