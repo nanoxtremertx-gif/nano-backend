@@ -1,4 +1,4 @@
-# --- servidor.py --- (v22.1 - MAESTRO FINAL + RESET MAESTRO + SOPORTE S4 WORKER)
+# --- servidor.py --- (v22.3 - MAESTRO FINAL + ESTRUCTURA 3 CARPETAS + UPDATE TRACKING)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -31,12 +31,10 @@ def create_app():
     global db_status
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v22.1 - Con Integración S4 + Reset) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v22.3 - Estructura 3 Carpetas + Tracking) <<<")
 
     # --- 5. CONFIGURACIÓN DE APP ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    
-    # --- FIX VITAL: MOTOR DB ANTI-DESCONEXIÓN ---
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
         "pool_pre_ping": True,
         "pool_recycle": 300,
@@ -73,18 +71,24 @@ def create_app():
     bcrypt.init_app(app)
     db.init_app(app)
 
-    # --- 7. DIRECTORIOS ---
+    # --- 7. DIRECTORIOS (ESTRUCTURA DE 3 CARPETAS) ---
     BASE_DIR = os.getcwd()
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
     AVATARS_FOLDER = os.path.join(UPLOAD_FOLDER, 'avatars')
-    LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')
-    UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates')
-    INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')
     DOCS_FOLDER = os.path.join(BASE_DIR, 'documentos_gestion')
     BIBLIOTECA_PUBLIC_FOLDER = os.path.join(BASE_DIR, 'biblioteca_publica')
 
-    # Crear carpetas
-    for folder in [UPLOAD_FOLDER, AVATARS_FOLDER, LOGS_FOLDER, UPDATES_FOLDER, INCIDENTS_FOLDER, DOCS_FOLDER, BIBLIOTECA_PUBLIC_FOLDER]:
+    # >> LAS 3 CARPETAS DE DIAGNÓSTICO <<
+    LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')       # 1. Logs Históricos
+    INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')   # 2. Logs Incidentes
+    UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates_system')     # 3. Actualizaciones (Sistema)
+    
+    # >> SUBCARPETA DE TRACKING <<
+    UPDATES_TRACKING_FOLDER = os.path.join(UPDATES_FOLDER, 'download_tracking')
+
+    # Crear todas
+    for folder in [UPLOAD_FOLDER, AVATARS_FOLDER, DOCS_FOLDER, BIBLIOTECA_PUBLIC_FOLDER, 
+                   LOGS_FOLDER, INCIDENTS_FOLDER, UPDATES_FOLDER, UPDATES_TRACKING_FOLDER]:
         os.makedirs(folder, exist_ok=True)
 
     SUB_DOC_FOLDERS = ['desarrollo', 'gestion', 'operaciones']
@@ -118,7 +122,7 @@ def create_app():
     # --- RUTAS PÚBLICAS Y HEALTH CHECK ---
     @app.route('/')
     def health_check():
-        return jsonify({"status": "v22.0 ONLINE (Maestro)", "db": db_status}), 200
+        return jsonify({"status": "v22.3 ONLINE (Maestro)", "db": db_status}), 200
 
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): return send_from_directory(UPLOAD_FOLDER, filename)
@@ -128,8 +132,6 @@ def create_app():
     def download_log_file(filename): return send_from_directory(LOGS_FOLDER, filename)
     @app.route('/logs_incidents/<path:filename>')
     def download_incident_file(filename): return send_from_directory(INCIDENTS_FOLDER, filename)
-    @app.route('/updates/<path:filename>')
-    def download_update_file(filename): return send_from_directory(UPDATES_FOLDER, filename)
     @app.route('/documentos_gestion/<path:section>/<path:filename>')
     def download_doc_gestion(section, filename):
         if section not in SUB_DOC_FOLDERS: return jsonify({"msg": "Sección inválida"}), 400
@@ -138,6 +140,28 @@ def create_app():
     def download_biblioteca_file(filename):
         return send_from_directory(BIBLIOTECA_PUBLIC_FOLDER, filename)
     
+    # --- RUTA DE DESCARGA DE ACTUALIZACIONES (CON TRACKING) ---
+    @app.route('/updates/<path:filename>')
+    def download_update_file(filename):
+        # 1. Registrar el acceso en la subcarpeta 'download_tracking'
+        try:
+            requester_ip = request.remote_addr
+            # Si el cliente manda user en query param (opcional)
+            requester_user = request.args.get('user', 'Anonimo')
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            log_line = f"[{timestamp}] IP: {requester_ip} - User: {requester_user} - Downloaded: {filename}\n"
+            
+            # Crear archivo de log específico para este parche o general
+            tracking_file = os.path.join(UPDATES_TRACKING_FOLDER, f"track_{filename}.txt")
+            with open(tracking_file, "a") as f:
+                f.write(log_line)
+        except Exception as e:
+            print(f"Error tracking update download: {e}")
+
+        # 2. Entregar el archivo desde la carpeta updates_system
+        return send_from_directory(UPDATES_FOLDER, filename)
+
     @app.route('/admin/create_tables', methods=['GET'])
     def create_tables():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY:
@@ -366,14 +390,10 @@ def create_app():
             save_path = os.path.join(UPLOAD_FOLDER, unique_name)
             file.save(save_path); file_size = os.path.getsize(save_path)
             
-            # --- FIX: Si parentId es nulo, buscar la carpeta raíz ---
             if parent_id in ['null', 'undefined', '', None]:
                 root_folder = UserFile.query.filter_by(owner_username=user_id, parent_id=None, type='folder').first()
-                if root_folder:
-                    parent_id = root_folder.id
-                else:
-                    parent_id = None
-            # --------------------------------------------------------
+                if root_folder: parent_id = root_folder.id
+                else: parent_id = None
             
             new_file = UserFile(owner_username=user_id, name=filename, type='file', parent_id=parent_id, size_bytes=file_size, storage_path=unique_name, verification_status=verification_status, description=description)
             db.session.add(new_file); db.session.commit()
@@ -450,12 +470,10 @@ def create_app():
     @app.route('/api/documentos/<section>', methods=['GET'])
     def get_gestion_docs(section):
         try:
-            # MODIFICACIÓN: FILTRAMOS 'chat_data.json' PARA QUE NO SE VEA EN LAS LISTAS
             docs = DocGestion.query.filter_by(section=section).all()
-            
             visible_docs = []
             for d in docs:
-                if d.name == 'chat_data.json': continue # OCULTAR ARCHIVO DE CHAT
+                if d.name == 'chat_data.json': continue 
                 visible_docs.append({
                     "id": d.id, "name": d.name, "size": d.size, 
                     "url": get_file_url(os.path.join(section, d.storage_path), 'documentos_gestion') if d.storage_path else None, 
@@ -473,7 +491,6 @@ def create_app():
             if parent_id in ['null', 'None']: parent_id = None
             filename = secure_filename(file.filename)
             
-            # Si es el chat, no usar UUID para sobreescribir siempre el mismo
             if filename == 'chat_data.json': storage_name = filename
             else: storage_name = f"{uuid.uuid4().hex[:8]}_{filename}"
             
@@ -481,7 +498,6 @@ def create_app():
             os.makedirs(os.path.join(DOCS_FOLDER, section), exist_ok=True)
             file.save(save_path); file_size = os.path.getsize(save_path)
             
-            # Si es chat, borramos entrada vieja en DB para evitar duplicados visuales (aunque esté oculto)
             if filename == 'chat_data.json':
                  old_chat = DocGestion.query.filter_by(name='chat_data.json', section=section).first()
                  if old_chat: db.session.delete(old_chat)
@@ -516,21 +532,51 @@ def create_app():
             return jsonify({"message": "No encontrado"}), 404
         except Exception as e: return jsonify({"message": str(e)}), 500
 
+    # -------------------------------------------------------------
+    # GESTIÓN DE DIAGNÓSTICO: LOGS, INCIDENTES Y ACTUALIZACIONES
+    # -------------------------------------------------------------
     @app.route('/api/logs/historical', methods=['POST', 'GET'])
     def logs(): 
+        # GET: Listar logs para el COO
         if request.method == 'GET':
             if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
             logs = HistoricalLog.query.order_by(HistoricalLog.date.desc()).limit(100).all()
-            return jsonify([{"id": l.id, "user": l.user, "ip": l.ip, "quality": l.quality, "date": l.date.isoformat()} for l in logs]), 200
-        user = request.headers.get('X-Username'); filename_ref = f"LOG_{user}_{uuid.uuid4().hex}.log"
-        new_log = HistoricalLog(user=user, ip=request.headers.get('X-IP'), quality=request.headers.get('X-Quality'), filename=filename_ref, storage_path=filename_ref, date=datetime.datetime.utcnow())
+            return jsonify([{"id": l.id, "user": l.user, "ip": l.ip, "quality": l.quality, "date": l.date.isoformat(), "filename": l.filename} for l in logs]), 200
+        
+        # POST: Guardar log en carpeta 1 (logs_historical)
+        user = request.headers.get('X-Username')
+        file = request.files.get('log_file')
+        
+        if file:
+            filename_ref = f"LOG_{user}_{uuid.uuid4().hex}.txt"
+            save_path = os.path.join(LOGS_FOLDER, filename_ref)
+            file.save(save_path)
+        else:
+            filename_ref = f"LOG_{user}_{uuid.uuid4().hex}.txt"
+            if request.data:
+                with open(os.path.join(LOGS_FOLDER, filename_ref), 'wb') as f: f.write(request.data)
+            else: filename_ref = "N/A"
+
+        new_log = HistoricalLog(
+            user=user, 
+            ip=request.headers.get('X-IP'), 
+            quality=request.headers.get('X-Quality'), 
+            filename=filename_ref, 
+            storage_path=filename_ref, 
+            date=datetime.datetime.utcnow()
+        )
         db.session.add(new_log); db.session.commit()
         return jsonify({"status": "Log registrado"}), 201
             
     @app.route('/api/logs/incident', methods=['POST'])
     def inc(): 
+        # Guardar incidente en carpeta 2 (logs_incidents)
         user = request.form.get('X-Username'); file = request.files.get('log_file'); filename = secure_filename(file.filename) if file else "N/A"
-        new_incident = IncidentReport(user=user, ip=request.form.get('X-IP'), message=request.form.get('message'), filename=filename, storage_path=f"INCIDENT_{user}_{filename}", date=datetime.datetime.utcnow())
+        save_name = f"INCIDENT_{user}_{filename}"
+        
+        if file: file.save(os.path.join(INCIDENTS_FOLDER, save_name))
+        
+        new_incident = IncidentReport(user=user, ip=request.form.get('X-IP'), message=request.form.get('message'), filename=save_name if file else "N/A", storage_path=save_name if file else "N/A", date=datetime.datetime.utcnow())
         db.session.add(new_incident); db.session.commit()
         return jsonify({"status":"Reporte recibido"}), 201
 
@@ -538,15 +584,20 @@ def create_app():
     def incs(): 
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         reports = IncidentReport.query.order_by(IncidentReport.date.desc()).limit(100).all()
-        return jsonify([{"id": r.id, "user": r.user, "message": r.message, "date": r.date.isoformat()} for r in reports]), 200
+        return jsonify([{"id": r.id, "user": r.user, "message": r.message, "date": r.date.isoformat(), "filename": r.filename} for r in reports]), 200
 
+    # --- ACTUALIZACIONES: CARPETA 3 (updates_system) ---
     @app.route('/api/updates/upload', methods=['POST'])
     def upload_update_file_route():
         filename = secure_filename(request.headers.get('X-Vercel-Filename'))
-        save_path = os.path.join(UPDATES_FOLDER, filename); 
+        # Guardar en la nueva carpeta updates_system
+        save_path = os.path.join(UPDATES_FOLDER, filename)
+        
         with open(save_path, 'wb') as f: f.write(request.data)
+        
         existing = UpdateFile.query.filter_by(filename=filename).first()
         if existing: db.session.delete(existing); db.session.commit()
+        
         new_update = UpdateFile(filename=filename, version="1.0", size=os.path.getsize(save_path), storage_path=filename)
         db.session.add(new_update); db.session.commit()
         return jsonify({"message": "Actualización subida"}), 201
@@ -560,6 +611,7 @@ def create_app():
     def chk():
         latest = UpdateFile.query.order_by(UpdateFile.date.desc()).first()
         if not latest: return jsonify({"message":"No updates"}), 404
+        # URL apunta a /updates/...
         return jsonify({"version": latest.version, "download_url": get_file_url(latest.storage_path, 'updates')}), 200
 
     @app.route('/api/biblioteca/public-files', methods=['GET'])
@@ -592,11 +644,9 @@ def create_app():
     # --- ENDPOINTS ESPECÍFICOS PARA EL CHAT ---
     @app.route('/api/chat/history', methods=['GET'])
     def get_chat_history_api():
-        # Busca el archivo chat_data.json en operaciones
         try:
             path = os.path.join(DOCS_FOLDER, 'operaciones', 'chat_data.json')
             if not os.path.exists(path):
-                 # Crea uno vacío si no existe
                  default = [{"user":"System","msg":"Chat Iniciado","date":datetime.datetime.now().strftime("%H:%M")}]
                  with open(path, 'w') as f: json.dump(default, f)
                  return jsonify(default), 200
@@ -606,11 +656,9 @@ def create_app():
 
     @app.route('/api/chat/send', methods=['POST'])
     def send_chat_msg_api():
-        # Recibe mensaje y lo anexa al archivo
         try:
             path = os.path.join(DOCS_FOLDER, 'operaciones', 'chat_data.json')
-            data = request.get_json() # Espera {"user": "X", "msg": "Y"}
-            
+            data = request.get_json()
             history = []
             if os.path.exists(path):
                 with open(path, 'r') as f: history = json.load(f)
@@ -621,8 +669,6 @@ def create_app():
                 "date": datetime.datetime.now().strftime("%H:%M")
             }
             history.append(new_msg)
-            
-            # Mantener solo últimos 50 mensajes
             if len(history) > 50: history = history[-50:]
             
             with open(path, 'w') as f: json.dump(history, f, indent=2)
@@ -636,44 +682,35 @@ def create_app():
             return jsonify({"msg": "Acceso denegado"}), 403
         try:
             with app.app_context():
-                print(">>> BORRANDO TABLA ANTIGUA doc_gestion...")
                 db.session.execute(text('DROP TABLE IF EXISTS doc_gestion CASCADE;'))
                 db.session.commit()
-                print(">>> RECREANDO TABLAS...")
                 db.create_all()
             return jsonify({"message": "ÉXITO: Tabla doc_gestion reconstruida."}), 200
         except Exception as e:
             db.session.rollback()
             return jsonify({"error": f"Fallo crítico: {str(e)}"}), 500
     
-    # -------------------------------------------------------------
-    # MOVIEMIENTO ÚNICO: AGREGADO RESET MAESTRO DE DIAGNÓSTICOS
-    # -------------------------------------------------------------
+    # --- RESET MAESTRO (LIMPIA LAS 3 CARPETAS) ---
     @app.route('/api/admin/reset-diagnostics', methods=['DELETE'])
     def reset_diagnostics():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY:
             return jsonify({"msg": "Acceso denegado"}), 403
         try:
-            # Borrar tablas de diagnóstico (Logs, Incidentes, Updates)
+            # DB Clean
             num_logs = db.session.query(HistoricalLog).delete()
             num_incidents = db.session.query(IncidentReport).delete()
             num_updates = db.session.query(UpdateFile).delete()
             
-            # Borrar archivos físicos asociados para liberar espacio
-            # 1. Logs Históricos
-            for f in os.listdir(LOGS_FOLDER):
-                fp = os.path.join(LOGS_FOLDER, f)
-                if os.path.isfile(fp): os.remove(fp)
+            # File Clean (3 Carpetas + Tracking)
+            folders_to_clean = [LOGS_FOLDER, INCIDENTS_FOLDER, UPDATES_FOLDER, UPDATES_TRACKING_FOLDER]
             
-            # 2. Incidentes
-            for f in os.listdir(INCIDENTS_FOLDER):
-                fp = os.path.join(INCIDENTS_FOLDER, f)
-                if os.path.isfile(fp): os.remove(fp)
-                
-            # 3. Updates
-            for f in os.listdir(UPDATES_FOLDER):
-                fp = os.path.join(UPDATES_FOLDER, f)
-                if os.path.isfile(fp): os.remove(fp)
+            for folder in folders_to_clean:
+                if os.path.exists(folder):
+                    for f in os.listdir(folder):
+                        fp = os.path.join(folder, f)
+                        # Solo borrar archivos, no subcarpetas (para no borrar UPDATES_TRACKING_FOLDER dentro de UPDATES_FOLDER accidentalmente si se itera mal)
+                        if os.path.isfile(fp): 
+                            os.remove(fp)
 
             db.session.commit()
             return jsonify({
@@ -687,7 +724,6 @@ def create_app():
         except Exception as e:
             db.session.rollback()
             return jsonify({"error": str(e)}), 500
-    # -------------------------------------------------------------
 
     # ===============================================================
     # 🔗 ZONA DE INTEGRACIÓN CON SERVIDOR 4 (WORKER)
@@ -707,7 +743,6 @@ def create_app():
 
     @app.route('/api/worker/check-permission', methods=['POST'])
     def worker_check_permission():
-        """Srv4 pregunta si el usuario puede convertir."""
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"allow": False, "reason": "Auth Fail"}), 403
         
         data = request.get_json()
@@ -731,21 +766,17 @@ def create_app():
                 remaining = str(unlock_time - datetime.datetime.utcnow()).split('.')[0]
                 return jsonify({"allow": False, "reason": f"Cooldown activo. Espera: {remaining}"}), 200
         except:
-            # Si hay error en la fecha, dejar pasar por si acaso
             return jsonify({"allow": True}), 200
             
         return jsonify({"allow": True}), 200
 
     @app.route('/api/worker/log-success', methods=['POST'])
     def worker_log_success():
-        """Srv4 reporta que terminó y entregó un archivo."""
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"status": "Fail"}), 403
         
-        new_record = request.get_json() # Srv4 nos manda el objeto record completo
+        new_record = request.get_json()
         records = load_conversion_records()
         records.append(new_record)
-        
-        # Mantenemos el log limpio (últimos 1000 registros)
         if len(records) > 1000: records = records[-1000:]
         
         save_conversion_records(records)
@@ -753,7 +784,6 @@ def create_app():
 
     @app.route('/api/worker/records', methods=['GET'])
     def get_worker_records():
-        """Devuelve el historial de conversiones."""
         return jsonify({"records": load_conversion_records()}), 200
 
     return app
