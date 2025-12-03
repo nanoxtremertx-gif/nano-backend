@@ -1,4 +1,4 @@
-# --- servidor.py --- (v22.0 - MAESTRO FINAL + SOPORTE S4 WORKER)
+# --- servidor.py --- (v22.1 - MAESTRO FINAL + RESET MAESTRO + SOPORTE S4 WORKER)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -31,7 +31,7 @@ def create_app():
     global db_status
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v22.0 - Con Integración S4) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v22.1 - Con Integración S4 + Reset) <<<")
 
     # --- 5. CONFIGURACIÓN DE APP ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -509,8 +509,8 @@ def create_app():
             doc = DocGestion.query.get(doc_id)
             if doc:
                 if doc.type == 'file' and doc.storage_path:
-                      try: os.remove(os.path.join(DOCS_FOLDER, doc.section, doc.storage_path))
-                      except: pass
+                       try: os.remove(os.path.join(DOCS_FOLDER, doc.section, doc.storage_path))
+                       except: pass
                 db.session.delete(doc); db.session.commit()
                 return jsonify({"message": "Eliminado"}), 200
             return jsonify({"message": "No encontrado"}), 404
@@ -646,6 +646,49 @@ def create_app():
             db.session.rollback()
             return jsonify({"error": f"Fallo crítico: {str(e)}"}), 500
     
+    # -------------------------------------------------------------
+    # MOVIEMIENTO ÚNICO: AGREGADO RESET MAESTRO DE DIAGNÓSTICOS
+    # -------------------------------------------------------------
+    @app.route('/api/admin/reset-diagnostics', methods=['DELETE'])
+    def reset_diagnostics():
+        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY:
+            return jsonify({"msg": "Acceso denegado"}), 403
+        try:
+            # Borrar tablas de diagnóstico (Logs, Incidentes, Updates)
+            num_logs = db.session.query(HistoricalLog).delete()
+            num_incidents = db.session.query(IncidentReport).delete()
+            num_updates = db.session.query(UpdateFile).delete()
+            
+            # Borrar archivos físicos asociados para liberar espacio
+            # 1. Logs Históricos
+            for f in os.listdir(LOGS_FOLDER):
+                fp = os.path.join(LOGS_FOLDER, f)
+                if os.path.isfile(fp): os.remove(fp)
+            
+            # 2. Incidentes
+            for f in os.listdir(INCIDENTS_FOLDER):
+                fp = os.path.join(INCIDENTS_FOLDER, f)
+                if os.path.isfile(fp): os.remove(fp)
+                
+            # 3. Updates
+            for f in os.listdir(UPDATES_FOLDER):
+                fp = os.path.join(UPDATES_FOLDER, f)
+                if os.path.isfile(fp): os.remove(fp)
+
+            db.session.commit()
+            return jsonify({
+                "status": "ok", 
+                "deleted": {
+                    "logs": num_logs, 
+                    "incidents": num_incidents, 
+                    "updates": num_updates
+                }
+            }), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 500
+    # -------------------------------------------------------------
+
     # ===============================================================
     # 🔗 ZONA DE INTEGRACIÓN CON SERVIDOR 4 (WORKER)
     # ===============================================================
