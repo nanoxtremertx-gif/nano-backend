@@ -138,7 +138,7 @@ def create_app():
     @app.route('/'); @app.route('/health')
     def health(): return jsonify({"status": "v23.0 ONLINE", "db": db_status}), 200
 
-    # --- RUTAS DE DESCARGA (CON TRACKING DB INYECTADO) ---
+    # --- RUTAS DE DESCARGA (AHORA CON TRACKING DB INYECTADO) ---
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): 
         track_download_db(filename, 'user_file') # CFO TRACKING
@@ -168,13 +168,13 @@ def create_app():
         track_download_db(filename, 'public_lib') # CFO TRACKING
         return send_from_directory(BIBLIOTECA_PUBLIC_FOLDER, filename)
     
-    # --- RUTA DE DESCARGA DE ACTUALIZACIONES (MANTIENE DOBLE TRACKING) ---
+    # --- RUTA DE DESCARGA DE ACTUALIZACIONES (MANTIENE DOBLE TRACKING: TXT y DB) ---
     @app.route('/updates/<path:filename>')
     def download_update_file(filename):
         # 1. Registrar en DB para CFO (NUEVO)
         track_download_db(filename, 'system_update')
 
-        # 2. Registrar en TXT (Carpeta interna Tracking)
+        # 2. Registrar en TXT (Tu requerimiento de carpeta interna - INTACTO)
         try:
             requester_ip = request.remote_addr
             requester_user = request.args.get('user', 'Anonimo')
@@ -198,13 +198,13 @@ def create_app():
             total_dls = DownloadRecord.query.count()
             total_sales = db.session.query(db.func.sum(SalesRecord.amount)).scalar() or 0.0
             
-            # Top Usuarios
+            # Top Usuarios (Más descargas)
             top = db.session.query(DownloadRecord.user_id, db.func.count(DownloadRecord.id))\
                     .group_by(DownloadRecord.user_id)\
                     .order_by(db.func.count(DownloadRecord.id).desc()).limit(5).all()
             top_users = [{"user": r[0], "count": r[1]} for r in top]
             
-            # Últimas descargas
+            # Últimas descargas (Log vivo)
             recents = DownloadRecord.query.order_by(DownloadRecord.timestamp.desc()).limit(50).all()
             recent_list = [{"user": r.user_id, "file": r.filename, "type": r.category, "date": r.timestamp.isoformat()} for r in recents]
 
@@ -220,7 +220,7 @@ def create_app():
     def create_tables():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         try:
-            with app.app_context(): db.create_all() # Crea tablas nuevas
+            with app.app_context(): db.create_all() # Esto creará las nuevas tablas sin borrar las viejas
             return jsonify({"message": "Tablas actualizadas (inc. CFO Analytics)."}), 200
         except Exception as e: return jsonify({"error": str(e)}), 500
 
@@ -230,7 +230,7 @@ def create_app():
     @socketio.on('disconnect')
     def handle_disconnect(): pass
 
-    # --- AUTH Y GESTIÓN ---
+    # --- AUTH Y GESTIÓN (INTACTO) ---
     @app.route('/api/register', methods=['POST'])
     def register():
         d = request.get_json()
