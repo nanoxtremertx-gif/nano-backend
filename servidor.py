@@ -1,4 +1,4 @@
-# --- servidor.py --- (v23.0 - MAESTRO FINAL: FULL STACK + CFO ANALYTICS + ESTRUCTURA 3 CARPETAS + S4 + RESET)
+# --- servidor.py --- (v23.1 - MAESTRO FINAL: FULL STACK + FIX SYNTAX ERROR)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -17,14 +17,14 @@ from sqlalchemy import text
 from models import db, User, UserFile, HistoricalLog, IncidentReport, UpdateFile, DocGestion
 
 # ==========================================
-# 🆕 MODELOS PARA AUDITORÍA CFO (NUEVOS)
+# 🆕 MODELOS PARA AUDITORÍA CFO (INTACTOS)
 # ==========================================
 class DownloadRecord(db.Model):
     __tablename__ = 'download_record'
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.String(100)) # Username o "Anon"
+    user_id = db.Column(db.String(100))
     filename = db.Column(db.String(255))
-    category = db.Column(db.String(50)) # 'update', 'doc', 'user_file'
+    category = db.Column(db.String(50))
     ip_address = db.Column(db.String(50))
     timestamp = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
@@ -33,7 +33,7 @@ class SalesRecord(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     buyer_username = db.Column(db.String(100))
     amount = db.Column(db.Float)
-    concept = db.Column(db.String(100)) # "Upgrade to PRO"
+    concept = db.Column(db.String(100))
     timestamp = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 # ==========================================
 
@@ -42,19 +42,19 @@ cors = CORS()
 bcrypt = Bcrypt()
 socketio = SocketIO()
 
-# --- 3. Memoria RAM (Global) ---
+# --- 3. Memoria RAM ---
 ONLINE_USERS = {}
 ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
 db_status = "Desconocido"
 
-# --- 4. DEFINIR LA FÁBRICA DE LA APLICACIÓN ---
+# --- 4. FÁBRICA APP ---
 def create_app():
     global db_status
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v23.0 - Full Features + CFO) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v23.1 - Fix Syntax Error) <<<")
 
-    # --- 5. CONFIGURACIÓN DE APP ---
+    # --- 5. CONFIG ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
         "pool_pre_ping": True, "pool_recycle": 300, "pool_timeout": 30, "pool_size": 10, "max_overflow": 20
@@ -63,7 +63,6 @@ def create_app():
     try:
         raw_url = os.environ.get('NEON_URL')
         if not raw_url:
-            print("⚠️ NEON_URL no encontrada. Usando SQLite local.")
             app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///local_fallback.db"
             db_status = "SQLite (Local)"
         else:
@@ -77,28 +76,25 @@ def create_app():
         app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
         db_status = "SQLite (FALLBACK)"
 
-    # --- 6. INICIALIZACIÓN DE EXTENSIONES ---
+    # --- 6. INIT ---
     cors.init_app(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
     socketio.init_app(app, cors_allowed_origins="*")
     bcrypt.init_app(app)
     db.init_app(app)
 
-    # --- 7. DIRECTORIOS (ESTRUCTURA DE 3 CARPETAS) ---
+    # --- 7. DIRECTORIOS ---
     BASE_DIR = os.getcwd()
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
     AVATARS_FOLDER = os.path.join(UPLOAD_FOLDER, 'avatars')
     DOCS_FOLDER = os.path.join(BASE_DIR, 'documentos_gestion')
     BIBLIOTECA_PUBLIC_FOLDER = os.path.join(BASE_DIR, 'biblioteca_publica')
 
-    # >> LAS 3 CARPETAS DE DIAGNÓSTICO <<
+    # Carpetas Diagnóstico
     LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')       
     INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')   
     UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates_system')     
-    
-    # >> SUBCARPETA DE TRACKING <<
     UPDATES_TRACKING_FOLDER = os.path.join(UPDATES_FOLDER, 'download_tracking')
 
-    # Crear todas
     for folder in [UPLOAD_FOLDER, AVATARS_FOLDER, DOCS_FOLDER, BIBLIOTECA_PUBLIC_FOLDER, 
                    LOGS_FOLDER, INCIDENTS_FOLDER, UPDATES_FOLDER, UPDATES_TRACKING_FOLDER]:
         os.makedirs(folder, exist_ok=True)
@@ -106,11 +102,9 @@ def create_app():
     SUB_DOC_FOLDERS = ['desarrollo', 'gestion', 'operaciones']
     for sub in SUB_DOC_FOLDERS: os.makedirs(os.path.join(DOCS_FOLDER, sub), exist_ok=True)
 
-    # --- HELPER: TRACKER DB (NUEVO PARA CFO) ---
+    # --- HELPER: TRACKER DB ---
     def track_download_db(filename, category):
-        """Registra la descarga en la base de datos para el CFO."""
         try:
-            # Detectar usuario: Query param > Header > Anon
             user = request.args.get('user') or request.headers.get('X-Username') or "Anonimo"
             ip = request.remote_addr
             rec = DownloadRecord(user_id=user, filename=filename, category=category, ip_address=ip)
@@ -119,7 +113,7 @@ def create_app():
         except Exception as e:
             print(f"Error DB Tracking: {e}")
 
-    # --- Helpers Normales ---
+    # --- Helpers ---
     def emit_online_count():
         try: socketio.emit('update_online_count', {'count': len(ONLINE_USERS)})
         except: pass
@@ -134,14 +128,16 @@ def create_app():
         if size_bytes < 1048576: return f"{size_bytes/1024:.1f} KB"
         return f"{size_bytes/1048576:.2f} MB"
 
-    # --- HEALTH ---
-    @app.route('/'); @app.route('/health')
-    def health(): return jsonify({"status": "v23.0 ONLINE", "db": db_status}), 200
+    # --- HEALTH (CORREGIDO ERROR DE SINTAXIS AQUÍ) ---
+    @app.route('/')
+    @app.route('/health')
+    def health(): 
+        return jsonify({"status": "v23.1 ONLINE", "db": db_status}), 200
 
-    # --- RUTAS DE DESCARGA (AHORA CON TRACKING DB INYECTADO) ---
+    # --- RUTAS DE DESCARGA ---
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): 
-        track_download_db(filename, 'user_file') # CFO TRACKING
+        track_download_db(filename, 'user_file')
         return send_from_directory(UPLOAD_FOLDER, filename)
 
     @app.route('/uploads/avatars/<path:filename>')
@@ -149,32 +145,29 @@ def create_app():
 
     @app.route('/logs_historical/<path:filename>')
     def download_log_file(filename): 
-        track_download_db(filename, 'historical_log') # CFO TRACKING
+        track_download_db(filename, 'historical_log')
         return send_from_directory(LOGS_FOLDER, filename)
     
     @app.route('/logs_incidents/<path:filename>')
     def download_incident_file(filename): 
-        track_download_db(filename, 'incident_report') # CFO TRACKING
+        track_download_db(filename, 'incident_report')
         return send_from_directory(INCIDENTS_FOLDER, filename)
 
     @app.route('/documentos_gestion/<path:section>/<path:filename>')
     def download_doc_gestion(section, filename):
         if section not in SUB_DOC_FOLDERS: return jsonify({"msg": "Sección inválida"}), 400
-        track_download_db(filename, f'doc_{section}') # CFO TRACKING
+        track_download_db(filename, f'doc_{section}')
         return send_from_directory(os.path.join(DOCS_FOLDER, section), filename)
 
     @app.route('/biblioteca_publica/<path:filename>')
     def download_biblioteca_file(filename):
-        track_download_db(filename, 'public_lib') # CFO TRACKING
+        track_download_db(filename, 'public_lib')
         return send_from_directory(BIBLIOTECA_PUBLIC_FOLDER, filename)
     
-    # --- RUTA DE DESCARGA DE ACTUALIZACIONES (MANTIENE DOBLE TRACKING: TXT y DB) ---
+    # --- UPDATE TRACKING (TXT + DB) ---
     @app.route('/updates/<path:filename>')
     def download_update_file(filename):
-        # 1. Registrar en DB para CFO (NUEVO)
         track_download_db(filename, 'system_update')
-
-        # 2. Registrar en TXT (Tu requerimiento de carpeta interna - INTACTO)
         try:
             requester_ip = request.remote_addr
             requester_user = request.args.get('user', 'Anonimo')
@@ -185,26 +178,21 @@ def create_app():
             with open(tracking_file, "a") as f:
                 f.write(log_line)
         except: pass
-
-        # 3. Entregar archivo
         return send_from_directory(UPDATES_FOLDER, filename)
 
-    # --- API CFO ANALYTICS (NUEVO ENDPOINT) ---
+    # --- API CFO ANALYTICS ---
     @app.route('/api/cfo/analytics', methods=['GET'])
     def get_cfo_analytics():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Deny"}), 403
         try:
-            # Totales
             total_dls = DownloadRecord.query.count()
             total_sales = db.session.query(db.func.sum(SalesRecord.amount)).scalar() or 0.0
             
-            # Top Usuarios (Más descargas)
             top = db.session.query(DownloadRecord.user_id, db.func.count(DownloadRecord.id))\
                     .group_by(DownloadRecord.user_id)\
                     .order_by(db.func.count(DownloadRecord.id).desc()).limit(5).all()
             top_users = [{"user": r[0], "count": r[1]} for r in top]
             
-            # Últimas descargas (Log vivo)
             recents = DownloadRecord.query.order_by(DownloadRecord.timestamp.desc()).limit(50).all()
             recent_list = [{"user": r.user_id, "file": r.filename, "type": r.category, "date": r.timestamp.isoformat()} for r in recents]
 
@@ -220,8 +208,8 @@ def create_app():
     def create_tables():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
         try:
-            with app.app_context(): db.create_all() # Esto creará las nuevas tablas sin borrar las viejas
-            return jsonify({"message": "Tablas actualizadas (inc. CFO Analytics)."}), 200
+            with app.app_context(): db.create_all()
+            return jsonify({"message": "Tablas actualizadas (inc. CFO)."}), 200
         except Exception as e: return jsonify({"error": str(e)}), 500
 
     # --- SOCKETS ---
@@ -230,7 +218,7 @@ def create_app():
     @socketio.on('disconnect')
     def handle_disconnect(): pass
 
-    # --- AUTH Y GESTIÓN (INTACTO) ---
+    # --- AUTH ---
     @app.route('/api/register', methods=['POST'])
     def register():
         d = request.get_json()
@@ -310,11 +298,11 @@ def create_app():
         if request.method == 'PUT':
             d = request.get_json()
             new_role = d.get('role')
-            # --- DETECCIÓN DE VENTA AUTOMÁTICA (NUEVO) ---
+            # --- DETECCIÓN DE VENTA AUTOMÁTICA ---
             if u.role != 'pro' and new_role == 'pro':
                 sale = SalesRecord(buyer_username=username, amount=10.0, concept="Upgrade to PRO") 
                 db.session.add(sale)
-            # -------------------------------------
+            
             if new_role: u.role = new_role
             if 'subscriptionEndDate' in d: u.subscription_end = d['subscriptionEndDate']
             db.session.commit(); return jsonify({"message": "Actualizado"}), 200
@@ -511,9 +499,6 @@ def create_app():
             db.session.query(HistoricalLog).delete()
             db.session.query(IncidentReport).delete()
             db.session.query(UpdateFile).delete()
-            # Opcional: Borrar tablas de analytics si quieres resetear también eso
-            # db.session.query(DownloadRecord).delete() 
-            # db.session.query(SalesRecord).delete() 
             
             for folder in [LOGS_FOLDER, INCIDENTS_FOLDER, UPDATES_FOLDER, UPDATES_TRACKING_FOLDER]:
                 for f in os.listdir(folder):
