@@ -1,4 +1,4 @@
-# --- servidor.py --- (v26.0 - MAESTRO FINAL: FIX BIBLIOTECA + CFO + S4 + RESET)
+# --- servidor.py --- (v27.0 - GOLD MASTER: SYNTAX FIX + FULL SINERGIA)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -17,7 +17,7 @@ from sqlalchemy import text
 from models import db, User, UserFile, HistoricalLog, IncidentReport, UpdateFile, DocGestion
 
 # ==========================================
-# 🆕 MODELOS PARA AUDITORÍA CFO
+# 🆕 MODELOS PARA AUDITORÍA CFO (SE CREAN EN DB)
 # ==========================================
 class DownloadRecord(db.Model):
     __tablename__ = 'download_record'
@@ -35,13 +35,14 @@ class SalesRecord(db.Model):
     amount = db.Column(db.Float)
     concept = db.Column(db.String(100))
     timestamp = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+# ==========================================
 
 # --- 2. INICIALIZAR EXTENSIONES ---
 cors = CORS()
 bcrypt = Bcrypt()
 socketio = SocketIO()
 
-# --- 3. MEMORIA RAM ---
+# --- 3. Memoria RAM ---
 ONLINE_USERS = {}
 ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
 db_status = "Desconocido"
@@ -51,11 +52,16 @@ def create_app():
     global db_status
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v26.0 - Sinergia Total) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v27.0 - Syntax Expanded & Safe) <<<")
 
+    # --- 5. CONFIGURACIÓN ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        "pool_pre_ping": True, "pool_recycle": 300, "pool_timeout": 30, "pool_size": 10, "max_overflow": 20
+        "pool_pre_ping": True, 
+        "pool_recycle": 300, 
+        "pool_timeout": 30, 
+        "pool_size": 10, 
+        "max_overflow": 20
     }
 
     try:
@@ -68,7 +74,8 @@ def create_app():
             parsed = urlparse(raw_url)
             scheme = 'postgresql' if parsed.scheme == 'postgres' else parsed.scheme
             clean_url = urlunparse((scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).strip("'").strip()
-            if 'postgresql' in clean_url and 'sslmode' not in clean_url: clean_url += "?sslmode=require"
+            if 'postgresql' in clean_url and 'sslmode' not in clean_url: 
+                clean_url += "?sslmode=require"
             app.config['SQLALCHEMY_DATABASE_URI'] = clean_url
             db_status = "Neon PostgreSQL (REAL)"
     except Exception as e:
@@ -82,7 +89,7 @@ def create_app():
     bcrypt.init_app(app)
     db.init_app(app)
 
-    # --- 7. DIRECTORIOS (ESTRUCTURA DE 3 CARPETAS SOLICITADA) ---
+    # --- 7. DIRECTORIOS (ESTRUCTURA 3 CARPETAS) ---
     BASE_DIR = os.getcwd()
     
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
@@ -90,22 +97,22 @@ def create_app():
     DOCS_FOLDER = os.path.join(BASE_DIR, 'documentos_gestion')
     BIBLIOTECA_PUBLIC_FOLDER = os.path.join(BASE_DIR, 'biblioteca_publica')
 
-    # Carpetas de Diagnóstico
-    LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')       # 1. Logs
-    INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')   # 2. Incidentes
-    UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates_system')     # 3. Actualizaciones
-    
-    # Subcarpeta de Tracking
+    # Carpetas Diagnóstico
+    LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')       
+    INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')   
+    UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates_system')     
     UPDATES_TRACKING_FOLDER = os.path.join(UPDATES_FOLDER, 'download_tracking')
 
     ALL_FOLDERS = [
         UPLOAD_FOLDER, AVATARS_FOLDER, DOCS_FOLDER, BIBLIOTECA_PUBLIC_FOLDER,
         LOGS_FOLDER, INCIDENTS_FOLDER, UPDATES_FOLDER, UPDATES_TRACKING_FOLDER
     ]
-    for folder in ALL_FOLDERS: os.makedirs(folder, exist_ok=True)
+    for folder in ALL_FOLDERS:
+        os.makedirs(folder, exist_ok=True)
 
     SUB_DOC_FOLDERS = ['desarrollo', 'gestion', 'operaciones']
-    for sub in SUB_DOC_FOLDERS: os.makedirs(os.path.join(DOCS_FOLDER, sub), exist_ok=True)
+    for sub in SUB_DOC_FOLDERS:
+        os.makedirs(os.path.join(DOCS_FOLDER, sub), exist_ok=True)
 
     # --- HELPER: TRACKER DB (CFO) ---
     def track_download_db(filename, category):
@@ -120,8 +127,10 @@ def create_app():
 
     # --- Helpers Normales ---
     def emit_online_count():
-        try: socketio.emit('update_online_count', {'count': len(ONLINE_USERS)})
-        except: pass
+        try: 
+            socketio.emit('update_online_count', {'count': len(ONLINE_USERS)})
+        except: 
+            pass
 
     def get_file_url(filename, folder_route='uploads'):
         if not filename: return None
@@ -135,10 +144,12 @@ def create_app():
 
     # --- HEALTH ---
     @app.route('/')
-    def index(): return jsonify({"status": "v26.0 ONLINE", "db": db_status}), 200
+    def index():
+        return jsonify({"status": "v27.0 ONLINE", "db": db_status}), 200
     
     @app.route('/health')
-    def health(): return jsonify({"status": "ALIVE"}), 200
+    def health(): 
+        return jsonify({"status": "ALIVE"}), 200
 
     # --- RUTAS DE DESCARGA (CON TRACKING) ---
     @app.route('/uploads/<path:filename>')
@@ -147,7 +158,8 @@ def create_app():
         return send_from_directory(UPLOAD_FOLDER, filename)
 
     @app.route('/uploads/avatars/<path:filename>')
-    def download_avatar(filename): return send_from_directory(AVATARS_FOLDER, filename)
+    def download_avatar(filename): 
+        return send_from_directory(AVATARS_FOLDER, filename)
 
     @app.route('/logs_historical/<path:filename>')
     def download_log_file(filename): 
@@ -170,13 +182,13 @@ def create_app():
         track_download_db(filename, 'public_lib')
         return send_from_directory(BIBLIOTECA_PUBLIC_FOLDER, filename)
     
-    # --- RUTA DE DESCARGA DE ACTUALIZACIONES (TRACKING DOBLE: DB + TXT) ---
+    # --- RUTA DE DESCARGA DE ACTUALIZACIONES (DOBLE TRACKING) ---
     @app.route('/updates/<path:filename>')
     def download_update_file(filename):
-        # 1. DB Tracking (CFO)
+        # 1. CFO Tracking
         track_download_db(filename, 'system_update')
 
-        # 2. File Tracking (COO - Carpeta interna)
+        # 2. File Tracking Interno (Txt)
         try:
             requester_ip = request.remote_addr
             requester_user = request.args.get('user', 'Anonimo')
@@ -186,7 +198,8 @@ def create_app():
             tracking_file = os.path.join(UPDATES_TRACKING_FOLDER, f"track_{filename}.txt")
             with open(tracking_file, "a") as f:
                 f.write(log_line)
-        except: pass
+        except: 
+            pass
 
         return send_from_directory(UPDATES_FOLDER, filename)
 
@@ -212,7 +225,8 @@ def create_app():
                 "top_users": top_users,
                 "recent_downloads": recent_list
             }), 200
-        except Exception as e: return jsonify({"error": str(e)}), 500
+        except Exception as e: 
+            return jsonify({"error": str(e)}), 500
 
     @app.route('/admin/create_tables', methods=['GET'])
     def create_tables():
@@ -224,9 +238,12 @@ def create_app():
 
     # --- SOCKETS ---
     @socketio.on('connect')
-    def handle_connect(): emit('update_online_count', {'count': len(ONLINE_USERS)})
+    def handle_connect(): 
+        emit('update_online_count', {'count': len(ONLINE_USERS)})
+    
     @socketio.on('disconnect')
-    def handle_disconnect(): pass
+    def handle_disconnect(): 
+        pass
 
     # --- AUTH Y GESTIÓN ---
     @app.route('/api/register', methods=['POST'])
@@ -242,7 +259,8 @@ def create_app():
             db.session.add(new_folder); db.session.commit()
             ONLINE_USERS[d.get('username')] = datetime.datetime.utcnow(); emit_online_count()
             return jsonify({"message": "Registrado"}), 201
-        except Exception as e: db.session.rollback(); return jsonify({"message": str(e)}), 500
+        except Exception as e: 
+            db.session.rollback(); return jsonify({"message": str(e)}), 500
 
     @app.route('/api/login', methods=['POST'])
     def login():
@@ -308,7 +326,7 @@ def create_app():
         if request.method == 'PUT':
             d = request.get_json()
             new_role = d.get('role')
-            # --- VENTA AUTOMÁTICA (CFO) ---
+            # --- VENTA AUTOMÁTICA ---
             if u.role != 'pro' and new_role == 'pro':
                 sale = SalesRecord(buyer_username=username, amount=10.0, concept="Upgrade to PRO") 
                 db.session.add(sale)
@@ -382,7 +400,7 @@ def create_app():
                 owner_username=user_id, name=filename, type='file', parent_id=pid, 
                 size_bytes=file_size, storage_path=unique_name, verification_status=verification_status, 
                 description=description, 
-                is_published=is_published # <--- AHORA SÍ SE GUARDA EL ESTADO
+                is_published=is_published # <--- GUARDA ESTADO PÚBLICO
             )
             db.session.add(new_file); db.session.commit()
             
@@ -601,17 +619,20 @@ def create_app():
             return jsonify({"status":"OK"}), 200
         except: return jsonify({"error":"Fail"}), 500
 
-    # Worker Integration (FIXED SYNTAX HERE)
-    CONV_FILE = os.path.join(BASE_DIR, 'server_conversion_records.json')
+    # ===============================================================
+    # 🔗 ZONA DE INTEGRACIÓN CON SERVIDOR 4 (WORKER)
+    # ===============================================================
+    CONVERSION_RECORDS_FILE = os.path.join(BASE_DIR, 'server_conversion_records.json')
+
     def load_recs(): 
-        if not os.path.exists(CONV_FILE): return []
+        if not os.path.exists(CONVERSION_RECORDS_FILE): return []
         try: 
-            with open(CONV_FILE, 'r') as f: return json.load(f)
+            with open(CONVERSION_RECORDS_FILE, 'r') as f: return json.load(f)
         except: return []
-    
+
     def save_conversion_records(data):
-        try: 
-            with open(CONV_FILE, 'w') as f: 
+        try:
+            with open(CONVERSION_RECORDS_FILE, 'w') as f:
                 json.dump(data, f)
         except: pass
 
@@ -630,17 +651,11 @@ def create_app():
     @app.route('/api/worker/records', methods=['GET'])
     def w_get(): return jsonify({"records": load_recs()}), 200
 
-    @app.route('/admin/create_tables', methods=['GET'])
-    def create_tbls():
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "No"}), 403
-        with app.app_context(): db.create_all()
-        return jsonify({"msg": "OK"}), 200
-
     return app
 
 if __name__ == '__main__': 
     app = create_app()
-    # FORZAR CREACIÓN DE TABLAS AL INICIAR (CFO/COO)
+    # AUTO-SYNC DE TABLAS PARA EVITAR ERRORES DE DB
     with app.app_context():
         db.create_all()
         print(">>> DB SYNC OK <<<")
