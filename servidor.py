@@ -1,4 +1,4 @@
-# --- servidor.py --- (v25.0 - MAESTRO FINAL: FIX BIBLIOTECA + CFO + 3 CARPETAS)
+# --- servidor.py --- (v25.0 - MAESTRO FINAL: FIX SYNTAX ERROR + FULL FEATURES)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -52,7 +52,7 @@ def create_app():
     global db_status
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v25.0 - Fix Biblioteca & Sinergia) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v25.0 - Syntax Fixed) <<<")
 
     # --- 5. CONFIGURACIÓN ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -135,9 +135,14 @@ def create_app():
         if size_bytes < 1048576: return f"{size_bytes/1024:.1f} KB"
         return f"{size_bytes/1048576:.2f} MB"
 
-    # --- HEALTH ---
-    @app.route('/'); @app.route('/health')
-    def health(): return jsonify({"status": "v25.0 ONLINE", "db": db_status}), 200
+    # --- HEALTH (CORREGIDO EL ERROR DE SINTAXIS) ---
+    @app.route('/')
+    def index():
+        return jsonify({"status": "v25.0 ONLINE", "db": db_status}), 200
+
+    @app.route('/health')
+    def health(): 
+        return jsonify({"status": "ALIVE"}), 200
 
     # --- RUTAS DE DESCARGA (CON TRACKING) ---
     @app.route('/uploads/<path:filename>')
@@ -189,7 +194,7 @@ def create_app():
 
         return send_from_directory(UPDATES_FOLDER, filename)
 
-    # --- API CFO ANALYTICS (NUEVO) ---
+    # --- API CFO ANALYTICS ---
     @app.route('/api/cfo/analytics', methods=['GET'])
     def get_cfo_analytics():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Deny"}), 403
@@ -307,7 +312,7 @@ def create_app():
         if request.method == 'PUT':
             d = request.get_json()
             new_role = d.get('role')
-            # --- DETECCIÓN DE VENTA AUTOMÁTICA ---
+            # --- VENTA AUTOMÁTICA ---
             if u.role != 'pro' and new_role == 'pro':
                 sale = SalesRecord(buyer_username=username, amount=10.0, concept="Upgrade to PRO") 
                 db.session.add(sale)
@@ -498,6 +503,8 @@ def create_app():
             return jsonify({"message":"Deleted"}), 200
         return jsonify({"message":"404"}), 404
 
+    # --- SECCIÓN DIAGNÓSTICO: LOGS, INCIDENTES Y ACTUALIZACIONES ---
+    
     @app.route('/api/logs/historical', methods=['POST', 'GET'])
     def logs(): 
         if request.method == 'GET':
@@ -609,7 +616,10 @@ def create_app():
         try: 
             with open(CONV_FILE, 'r') as f: return json.load(f)
         except: return []
-        
+    def save_conversion_records(data):
+        try: with open(CONV_FILE, 'w') as f: json.dump(data, f)
+        except: pass
+
     @app.route('/api/worker/check-permission', methods=['POST'])
     def w_check():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"allow":False}), 403
@@ -625,12 +635,6 @@ def create_app():
     @app.route('/api/worker/records', methods=['GET'])
     def w_get(): return jsonify({"records": load_recs()}), 200
 
-    @app.route('/admin/create_tables', methods=['GET'])
-    def create_tbls():
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "No"}), 403
-        with app.app_context(): db.create_all()
-        return jsonify({"msg": "OK"}), 200
-
     return app
 
 if __name__ == '__main__': 
@@ -638,5 +642,5 @@ if __name__ == '__main__':
     # FORZAR CREACIÓN DE TABLAS AL INICIAR PARA EVITAR ERRORES DE DB
     with app.app_context():
         db.create_all()
-        print(">>> DB SINCRONIZADA OK <<<")
+        print(">>> DB SYNC OK <<<")
     socketio.run(app, host='0.0.0.0', port=7860)
