@@ -1,4 +1,4 @@
-# --- servidor.py --- (v25.0 - MAESTRO FINAL: FIX SYNTAX ERROR + FULL FEATURES)
+# --- servidor.py --- (v24.0 REPARADO - FIX SYNTAX ERROR + FULL FEATURES)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -52,7 +52,7 @@ def create_app():
     global db_status
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v25.0 - Syntax Fixed) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v24.0 - Syntax Fixed) <<<")
 
     # --- 5. CONFIGURACIÓN ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -135,14 +135,11 @@ def create_app():
         if size_bytes < 1048576: return f"{size_bytes/1024:.1f} KB"
         return f"{size_bytes/1048576:.2f} MB"
 
-    # --- HEALTH (CORREGIDO EL ERROR DE SINTAXIS) ---
+    # --- HEALTH ---
     @app.route('/')
-    def index():
-        return jsonify({"status": "v25.0 ONLINE", "db": db_status}), 200
-
     @app.route('/health')
     def health(): 
-        return jsonify({"status": "ALIVE"}), 200
+        return jsonify({"status": "v25.0 ONLINE", "db": db_status}), 200
 
     # --- RUTAS DE DESCARGA (CON TRACKING) ---
     @app.route('/uploads/<path:filename>')
@@ -617,7 +614,8 @@ def create_app():
             with open(CONV_FILE, 'r') as f: return json.load(f)
         except: return []
     def save_conversion_records(data):
-        try: with open(CONV_FILE, 'w') as f: json.dump(data, f)
+        try:
+            with open(CONV_FILE, 'w') as f: json.dump(data, f)
         except: pass
 
     @app.route('/api/worker/check-permission', methods=['POST'])
