@@ -1,4 +1,4 @@
-# --- servidor.py --- (v26.2 - MAESTRO FINAL: SYNTAX FIX 2 + FULL FEATURES)
+# --- servidor.py --- (v26.0 - MAESTRO FINAL: FIX BIBLIOTECA + CFO + S4 + RESET)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -35,14 +35,13 @@ class SalesRecord(db.Model):
     amount = db.Column(db.Float)
     concept = db.Column(db.String(100))
     timestamp = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-# ==========================================
 
 # --- 2. INICIALIZAR EXTENSIONES ---
 cors = CORS()
 bcrypt = Bcrypt()
 socketio = SocketIO()
 
-# --- 3. Memoria RAM ---
+# --- 3. MEMORIA RAM ---
 ONLINE_USERS = {}
 ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
 db_status = "Desconocido"
@@ -52,9 +51,8 @@ def create_app():
     global db_status
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v26.2 - Syntax Corrected) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v26.0 - Sinergia Total) <<<")
 
-    # --- 5. CONFIGURACIÓN ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
         "pool_pre_ping": True, "pool_recycle": 300, "pool_timeout": 30, "pool_size": 10, "max_overflow": 20
@@ -84,7 +82,7 @@ def create_app():
     bcrypt.init_app(app)
     db.init_app(app)
 
-    # --- 7. DIRECTORIOS (ESTRUCTURA 3 CARPETAS) ---
+    # --- 7. DIRECTORIOS (ESTRUCTURA DE 3 CARPETAS SOLICITADA) ---
     BASE_DIR = os.getcwd()
     
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
@@ -92,10 +90,12 @@ def create_app():
     DOCS_FOLDER = os.path.join(BASE_DIR, 'documentos_gestion')
     BIBLIOTECA_PUBLIC_FOLDER = os.path.join(BASE_DIR, 'biblioteca_publica')
 
-    # Carpetas Diagnóstico
-    LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')       
-    INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')   
-    UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates_system')     
+    # Carpetas de Diagnóstico
+    LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')       # 1. Logs
+    INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')   # 2. Incidentes
+    UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates_system')     # 3. Actualizaciones
+    
+    # Subcarpeta de Tracking
     UPDATES_TRACKING_FOLDER = os.path.join(UPDATES_FOLDER, 'download_tracking')
 
     ALL_FOLDERS = [
@@ -135,7 +135,7 @@ def create_app():
 
     # --- HEALTH ---
     @app.route('/')
-    def index(): return jsonify({"status": "v26.2 ONLINE", "db": db_status}), 200
+    def index(): return jsonify({"status": "v26.0 ONLINE", "db": db_status}), 200
     
     @app.route('/health')
     def health(): return jsonify({"status": "ALIVE"}), 200
@@ -170,13 +170,13 @@ def create_app():
         track_download_db(filename, 'public_lib')
         return send_from_directory(BIBLIOTECA_PUBLIC_FOLDER, filename)
     
-    # --- RUTA DE DESCARGA DE ACTUALIZACIONES (DOBLE TRACKING) ---
+    # --- RUTA DE DESCARGA DE ACTUALIZACIONES (TRACKING DOBLE: DB + TXT) ---
     @app.route('/updates/<path:filename>')
     def download_update_file(filename):
-        # 1. CFO Tracking
+        # 1. DB Tracking (CFO)
         track_download_db(filename, 'system_update')
 
-        # 2. File Tracking Interno
+        # 2. File Tracking (COO - Carpeta interna)
         try:
             requester_ip = request.remote_addr
             requester_user = request.args.get('user', 'Anonimo')
@@ -308,7 +308,7 @@ def create_app():
         if request.method == 'PUT':
             d = request.get_json()
             new_role = d.get('role')
-            # --- VENTA AUTOMÁTICA ---
+            # --- VENTA AUTOMÁTICA (CFO) ---
             if u.role != 'pro' and new_role == 'pro':
                 sale = SalesRecord(buyer_username=username, amount=10.0, concept="Upgrade to PRO") 
                 db.session.add(sale)
@@ -363,7 +363,8 @@ def create_app():
             verification_status = request.form.get('verificationStatus', 'N/A')
             description = request.form.get('description', None)
             
-            # --- FIX: Detectar si se publica ---
+            # --- FIX CRÍTICO: Detectar si se publica ---
+            # El frontend envía "isPublished" como string "true" o "false"
             is_pub_str = request.form.get('isPublished', 'false').lower()
             is_published = (is_pub_str == 'true')
             
@@ -380,7 +381,8 @@ def create_app():
             new_file = UserFile(
                 owner_username=user_id, name=filename, type='file', parent_id=pid, 
                 size_bytes=file_size, storage_path=unique_name, verification_status=verification_status, 
-                description=description, is_published=is_published
+                description=description, 
+                is_published=is_published # <--- AHORA SÍ SE GUARDA EL ESTADO
             )
             db.session.add(new_file); db.session.commit()
             
@@ -599,16 +601,18 @@ def create_app():
             return jsonify({"status":"OK"}), 200
         except: return jsonify({"error":"Fail"}), 500
 
-    # Worker Integration
+    # Worker Integration (FIXED SYNTAX HERE)
     CONV_FILE = os.path.join(BASE_DIR, 'server_conversion_records.json')
     def load_recs(): 
         if not os.path.exists(CONV_FILE): return []
         try: 
             with open(CONV_FILE, 'r') as f: return json.load(f)
         except: return []
+    
     def save_conversion_records(data):
         try: 
-            with open(CONV_FILE, 'w') as f: json.dump(data, f)
+            with open(CONV_FILE, 'w') as f: 
+                json.dump(data, f)
         except: pass
 
     @app.route('/api/worker/check-permission', methods=['POST'])
@@ -626,11 +630,17 @@ def create_app():
     @app.route('/api/worker/records', methods=['GET'])
     def w_get(): return jsonify({"records": load_recs()}), 200
 
+    @app.route('/admin/create_tables', methods=['GET'])
+    def create_tbls():
+        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "No"}), 403
+        with app.app_context(): db.create_all()
+        return jsonify({"msg": "OK"}), 200
+
     return app
 
 if __name__ == '__main__': 
     app = create_app()
-    # AUTO-SYNC DE TABLAS PARA EVITAR ERRORES DE DB
+    # FORZAR CREACIÓN DE TABLAS AL INICIAR (CFO/COO)
     with app.app_context():
         db.create_all()
         print(">>> DB SYNC OK <<<")
