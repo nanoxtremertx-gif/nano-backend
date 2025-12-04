@@ -1,4 +1,4 @@
-# --- servidor.py --- (v26.0 - MAESTRO FINAL: SINERGIA TOTAL CFO+COO+CTO+UPDATER)
+# --- servidor.py --- (v26.1 - MAESTRO FINAL: SYNTAX FIX + SINERGIA TOTAL)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -52,7 +52,7 @@ def create_app():
     global db_status
     
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v26.0 - Sinergia Total) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v26.1 - Syntax Fixed) <<<")
 
     # --- 5. CONFIGURACIÓN ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -84,21 +84,18 @@ def create_app():
     bcrypt.init_app(app)
     db.init_app(app)
 
-    # --- 7. DIRECTORIOS (ESTRUCTURA UNIFICADA PARA TODOS LOS ROLES) ---
+    # --- 7. DIRECTORIOS (ESTRUCTURA 3 CARPETAS) ---
     BASE_DIR = os.getcwd()
     
-    # Carpetas Base
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
     AVATARS_FOLDER = os.path.join(UPLOAD_FOLDER, 'avatars')
     DOCS_FOLDER = os.path.join(BASE_DIR, 'documentos_gestion')
     BIBLIOTECA_PUBLIC_FOLDER = os.path.join(BASE_DIR, 'biblioteca_publica')
 
-    # >> LAS 3 CARPETAS DE DIAGNÓSTICO (COO + UPDATER) <<
+    # Carpetas Diagnóstico
     LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')       
     INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')   
     UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates_system')     
-    
-    # >> SUBCARPETA DE TRACKING (COO) <<
     UPDATES_TRACKING_FOLDER = os.path.join(UPDATES_FOLDER, 'download_tracking')
 
     ALL_FOLDERS = [
@@ -138,12 +135,12 @@ def create_app():
 
     # --- HEALTH ---
     @app.route('/')
-    def index(): return jsonify({"status": "v26.0 ONLINE", "db": db_status}), 200
-
+    def index(): return jsonify({"status": "v26.1 ONLINE", "db": db_status}), 200
+    
     @app.route('/health')
     def health(): return jsonify({"status": "ALIVE"}), 200
 
-    # --- RUTAS DE DESCARGA (CON TRACKING CFO) ---
+    # --- RUTAS DE DESCARGA (CON TRACKING) ---
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): 
         track_download_db(filename, 'user_file')
@@ -173,13 +170,13 @@ def create_app():
         track_download_db(filename, 'public_lib')
         return send_from_directory(BIBLIOTECA_PUBLIC_FOLDER, filename)
     
-    # --- RUTA DE DESCARGA DE ACTUALIZACIONES (DOBLE TRACKING: DB + TXT) ---
+    # --- RUTA DE DESCARGA DE ACTUALIZACIONES (DOBLE TRACKING) ---
     @app.route('/updates/<path:filename>')
     def download_update_file(filename):
-        # 1. DB Tracking (CFO)
+        # 1. CFO Tracking
         track_download_db(filename, 'system_update')
 
-        # 2. File Tracking (COO - Carpeta Interna)
+        # 2. File Tracking Interno
         try:
             requester_ip = request.remote_addr
             requester_user = request.args.get('user', 'Anonimo')
@@ -193,7 +190,7 @@ def create_app():
 
         return send_from_directory(UPDATES_FOLDER, filename)
 
-    # --- API CFO ANALYTICS (NUEVO) ---
+    # --- API CFO ANALYTICS ---
     @app.route('/api/cfo/analytics', methods=['GET'])
     def get_cfo_analytics():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Deny"}), 403
@@ -311,11 +308,11 @@ def create_app():
         if request.method == 'PUT':
             d = request.get_json()
             new_role = d.get('role')
-            # --- DETECCIÓN DE VENTA AUTOMÁTICA (CFO) ---
+            # --- VENTA AUTOMÁTICA ---
             if u.role != 'pro' and new_role == 'pro':
                 sale = SalesRecord(buyer_username=username, amount=10.0, concept="Upgrade to PRO") 
                 db.session.add(sale)
-            # -------------------------------------------
+            
             if new_role: u.role = new_role
             if 'subscriptionEndDate' in d: u.subscription_end = d['subscriptionEndDate']
             db.session.commit(); return jsonify({"message": "Actualizado"}), 200
@@ -377,7 +374,8 @@ def create_app():
             if parent_id in ['null', 'undefined', '', None]:
                 root_folder = UserFile.query.filter_by(owner_username=user_id, parent_id=None, type='folder').first()
                 pid = root_folder.id if root_folder else None
-            else: pid = parent_id
+            else:
+                pid = parent_id
             
             new_file = UserFile(
                 owner_username=user_id, name=filename, type='file', parent_id=pid, 
@@ -499,13 +497,11 @@ def create_app():
     
     @app.route('/api/logs/historical', methods=['POST', 'GET'])
     def logs(): 
-        # GET: Listar logs para el COO
         if request.method == 'GET':
             if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
             logs = HistoricalLog.query.order_by(HistoricalLog.date.desc()).limit(100).all()
             return jsonify([{"id": l.id, "user": l.user, "ip": l.ip, "quality": l.quality, "date": l.date.isoformat(), "filename": l.filename} for l in logs]), 200
         
-        # POST: Guardar log en carpeta 1 (logs_historical)
         user = request.headers.get('X-Username')
         f = request.files.get('log_file')
         fn = f"LOG_{user}_{uuid.uuid4().hex}.txt"
@@ -536,27 +532,27 @@ def create_app():
     @app.route('/api/logs/incidents', methods=['GET'])
     def incs_old(): return inc()
 
-    # --- UPLOAD UPDATES (CARPETA 3) ---
+    # --- UPLOAD UPDATES (ORIGINAL ROUTE PRESERVED) ---
     @app.route('/api/updates/upload', methods=['POST'])
-    def upload_update_file_route():
-        filename = secure_filename(request.headers.get('X-Vercel-Filename'))
-        sp = os.path.join(UPDATES_FOLDER, filename)
+    def upload_update_file_route_new():
+        fn = secure_filename(request.headers.get('X-Vercel-Filename'))
+        sp = os.path.join(UPDATES_FOLDER, fn)
         with open(sp, 'wb') as f: f.write(request.data)
         
-        exist = UpdateFile.query.filter_by(filename=filename).first()
+        exist = UpdateFile.query.filter_by(filename=fn).first()
         if exist: db.session.delete(exist); db.session.commit()
         
-        new_update = UpdateFile(filename=filename, version="1.0", size=os.path.getsize(sp), storage_path=filename)
+        new_update = UpdateFile(filename=fn, version="1.0", size=os.path.getsize(sp), storage_path=fn)
         db.session.add(new_update); db.session.commit()
         return jsonify({"message":"Uploaded"}), 201
 
     @app.route('/api/updates/list', methods=['GET'])
-    def list_update_files():
+    def list_update_files_new():
         us = UpdateFile.query.order_by(UpdateFile.date.desc()).all()
         return jsonify([{"id":u.id, "name":u.filename, "version":u.version} for u in us]), 200
 
     @app.route('/api/updates/check', methods=['GET'])
-    def chk():
+    def chk_new():
         lat = UpdateFile.query.order_by(UpdateFile.date.desc()).first()
         if not lat: return jsonify({"message":"No updates"}), 404
         return jsonify({"version": lat.version, "download_url": get_file_url(lat.storage_path, 'updates')}), 200
@@ -569,10 +565,9 @@ def create_app():
             db.session.query(HistoricalLog).delete()
             db.session.query(IncidentReport).delete()
             db.session.query(UpdateFile).delete()
-            
-            # Borrar contadores CFO (Opcional, pero parte del reset completo)
-            db.session.query(DownloadRecord).delete() 
-            db.session.query(SalesRecord).delete() 
+            # Opcional: Borrar tablas de analytics si quieres resetear también eso
+            # db.session.query(DownloadRecord).delete() 
+            # db.session.query(SalesRecord).delete() 
             
             for folder in [LOGS_FOLDER, INCIDENTS_FOLDER, UPDATES_FOLDER, UPDATES_TRACKING_FOLDER]:
                 for f in os.listdir(folder):
@@ -612,7 +607,9 @@ def create_app():
             with open(CONV_FILE, 'r') as f: return json.load(f)
         except: return []
     def save_conversion_records(data):
-        try: with open(CONV_FILE, 'w') as f: json.dump(data, f)
+        try:
+            with open(CONV_FILE, 'w') as f:
+                json.dump(data, f)
         except: pass
 
     @app.route('/api/worker/check-permission', methods=['POST'])
@@ -634,7 +631,7 @@ def create_app():
 
 if __name__ == '__main__': 
     app = create_app()
-    # FORZAR CREACIÓN DE TABLAS AL INICIAR (CFO/COO)
+    # FORZAR CREACIÓN DE TABLAS AL INICIAR PARA EVITAR ERRORES DE DB
     with app.app_context():
         db.create_all()
         print(">>> DB SYNC OK <<<")
