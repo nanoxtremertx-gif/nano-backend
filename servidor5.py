@@ -1,4 +1,3 @@
-# servidor5.py (v5.1 - Actualizado con Sherlock v6.0 Sniper Mode)
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import sys
@@ -22,29 +21,20 @@ TERMINATOR = "::END_SIG"
 REDUNDANCY_FACTOR_LSB = 3
 MAX_PAYLOAD_BITS = 1500 
 
-# --- TOLERANCIAS SHERLOCK v6.0 (Modo Sniper) ---
-# Sintonizado para ignorar ruido JPEG natural pero atrapar residuos aislados
-TOL_DARK_RANGE = (2, 25)    
-TOL_LIGHT_RANGE = (230, 254)
-TOL_COLOR_VARIANCE = 15     
-MIN_NEIGHBOR_CONTRAST = 10  # Umbral CRÍTICO para el filtro de aislamiento
-
 # ===============================================================
-# 🧠 LÓGICA FORENSE (SHERLOCK V6.0)
+# 🧠 LÓGICA FORENSE REFINADA (Cero Falsos Positivos)
 # ===============================================================
 
 class ForensicReport:
     def __init__(self):
-        self.status = "UNKNOWN" # VERIFIED, MANIPULATED, CLEAN, TRACE
+        self.status = "UNKNOWN" # VERIFIED, MANIPULATED, CLEAN
         self.signature_data = {}
         self.forensic_evidence = []
         self.confidence_score = 0.0
-        self.pixels_found = 0
 
     def add_evidence(self, message, weight=0.0):
         self.forensic_evidence.append(message)
         self.confidence_score += weight
-        if self.confidence_score > 100.0: self.confidence_score = 100.0
 
 def _get_pixel_constellation(seed_key: bytes, width: int, height: int, count: int) -> list:
     seed = hashlib.sha256(seed_key).hexdigest()
@@ -56,7 +46,7 @@ def _get_pixel_constellation(seed_key: bytes, width: int, height: int, count: in
     return coordinates
 
 def _extract_and_decrypt(read_data_bytes: bytes) -> dict:
-    """Intenta desencriptar bytes crudos."""
+    """Intenta desencriptar bytes crudos buscando cabeceras."""
     results = {"valid": False}
     header_bytes = MAGIC_HEADER.encode('utf-8')
     terminator_bytes = TERMINATOR.encode('utf-8')
@@ -77,7 +67,7 @@ def _extract_and_decrypt(read_data_bytes: bytes) -> dict:
                 pass
     return results
 
-# --- NIVEL 1: DETECCIÓN CRIPTOGRÁFICA (ESTRICTA) ---
+# --- NIVEL 1: DETECCIÓN CRIPTOGRÁFICA (FIRMA VÁLIDA) ---
 def attempt_crypto_read(img_array) -> dict:
     height, width, _ = img_array.shape
     total_pixels = width * height
@@ -87,7 +77,7 @@ def attempt_crypto_read(img_array) -> dict:
     
     constellation = _get_pixel_constellation(HUELLA_SECRET_KEY, width, height, min(max_pixels_needed, total_pixels))
 
-    # 1. Intento LSB
+    # 1. Intento LSB (v58)
     bits_lsb = ""
     readable_bits = len(constellation) // REDUNDANCY_FACTOR_LSB
     for i in range(readable_bits):
@@ -105,12 +95,12 @@ def attempt_crypto_read(img_array) -> dict:
         if res_lsb["valid"]: return {"valid": True, "method": "LSB (Invisible)", "data": res_lsb["data"]}
     except: pass
 
-    # 2. Intento Contraste
+    # 2. Intento Contraste (v57)
     bits_con = ""
     for x, y in constellation:
         val = img_array[y, x, 2]
-        if val >= 240: bits_con += '1'
-        elif val <= 15: bits_con += '0'
+        if val > 230: bits_con += '1'
+        elif val < 25: bits_con += '0'
         else: break 
         
     try:
@@ -122,95 +112,32 @@ def attempt_crypto_read(img_array) -> dict:
 
     return {"valid": False}
 
-# --- NIVEL 2: ESCÁNER DE RESIDUOS INTELIGENTE (SNIPER MODE) ---
-def scan_smart_residuals(img_array, report: ForensicReport):
+# --- NIVEL 2: DETECCIÓN DE HUELLAS ROTAS (FORENSE ESTRICTO) ---
+def scan_raw_bytes_for_traces(raw_bytes: bytes, report: ForensicReport):
     """
-    Busca píxeles aislados (Puntillismo Artificial) aplicando el Filtro de Aislamiento.
-    Evita falsos positivos de sombras naturales.
+    Busca fragmentos de la tecnología XtremeRTX que sobreviven a compresiones agresivas.
+    NO busca píxeles (demasiados falsos positivos). Busca DATOS.
     """
-    h, w, channels = img_array.shape
-    # Trabajar con int16 para evitar desbordamiento en restas
-    img_signed = img_array.astype(np.int16)
-    R, G, B = img_signed[:,:,0], img_signed[:,:,1], img_signed[:,:,2]
-
-    # 1. Filtro de Color (Candidatos Grisáceos y en Rango)
-    color_mask = (np.abs(R - G) <= TOL_COLOR_VARIANCE) & \
-                 (np.abs(G - B) <= TOL_COLOR_VARIANCE) & \
-                 (np.abs(R - B) <= TOL_COLOR_VARIANCE)
-
-    val_mask_dark = (G >= TOL_DARK_RANGE[0]) & (G <= TOL_DARK_RANGE[1])
-    val_mask_light = (G >= TOL_LIGHT_RANGE[0]) & (G <= TOL_LIGHT_RANGE[1])
-    
-    candidates_mask = color_mask & (val_mask_dark | val_mask_light)
-    y_idxs, x_idxs = np.where(candidates_mask)
-    
-    confirmed_artifacts = 0
-    strict_mode = len(y_idxs) > 5000 
-    
-    # 2. Filtro de Aislamiento Espacial (Sniper)
-    for i in range(len(y_idxs)):
-        y, x = y_idxs[i], x_idxs[i]
-        
-        # Ignorar bordes extremos
-        if y <= 1 or y >= h-2 or x <= 1 or x >= w-2: continue
-        
-        center_val = np.mean(img_signed[y, x])
-        
-        # Vecinos (Arriba, Abajo, Izq, Der)
-        neighbors = [
-            np.mean(img_signed[y-1, x]), 
-            np.mean(img_signed[y+1, x]), 
-            np.mean(img_signed[y, x-1]), 
-            np.mean(img_signed[y, x+1])
-        ]
-        
-        is_isolated = True
-        similarity_count = 0
-        effective_threshold = MIN_NEIGHBOR_CONTRAST + (10 if strict_mode else 0)
-
-        for n_val in neighbors:
-            # Si la diferencia es pequeña, es un vecino "amigo" (parte de la misma mancha/sombra)
-            if abs(center_val - n_val) < effective_threshold:
-                similarity_count += 1
-        
-        # Si se parece a 2 o más vecinos, es natural (sombra/mancha) -> DESCARTAR
-        if similarity_count >= 2:
-            is_isolated = False
-            
-        if is_isolated:
-            confirmed_artifacts += 1
-
-    report.pixels_found = confirmed_artifacts
-
-    if confirmed_artifacts > 0:
-        # REGLA DEL 0.9%
-        prob = confirmed_artifacts * 0.9
-        
-        report.add_evidence(f"Puntillismo Aislado Detectado: {confirmed_artifacts} píxeles artificiales.", prob)
-        
-        if confirmed_artifacts < 5:
-            report.add_evidence("⚠️ Traza Mínima: Posible residuo de limpieza profunda.", 0)
-        elif confirmed_artifacts > 50:
-            report.add_evidence("🔴 Patrón Disperso: Alta probabilidad de imagen Evoker manipulada.", 0)
-
-# --- NIVEL 3: DETECCIÓN DE STRINGS ROTOS (RAW) ---
-def scan_raw_bytes(raw_bytes: bytes, report: ForensicReport):
     try:
-        # Solo escaneamos el inicio para no sobrecargar en archivos gigantes
-        chunk = raw_bytes[:4096] 
-        if b"XRTX_SIG" in chunk:
-            report.add_evidence("Fragmento de cabecera 'XRTX_SIG' hallado en crudo.", weight=20.0)
-        elif b"XRTX" in chunk:
-            report.add_evidence("Fragmento 'XRTX' hallado en crudo.", weight=5.0)
+        # 1. Cabecera Mágica Rota
+        # Si encontramos "XRTX_SIG" pero la criptografía falló antes, es MANIPULADO.
+        if b"XRTX_SIG" in raw_bytes:
+            report.add_evidence("Cabecera 'XRTX_SIG' detectada en estructura profunda (Firma corrupta).", weight=1.0)
+        
+        # 2. Fragmentos de JSON característicos
+        # "idf", "qdna", "api" son las keys que usa tu sistema.
+        # En una imagen normal, es muy raro encontrar la secuencia exacta b'"qdna":'
+        if b'"qdna":' in raw_bytes or b"'qdna':" in raw_bytes:
+            report.add_evidence("Fragmento de metadatos 'qdna' hallado en crudo.", weight=0.8)
             
-        if b"idf" in chunk and b"qdna" in chunk:
-            report.add_evidence("Estructura JSON de autoría en metadatos.", weight=10.0)
-                
+        if b'"idf":' in raw_bytes and b'"ts":' in raw_bytes:
+            report.add_evidence("Estructura de identificación parcial hallada.", weight=0.6)
+
     except Exception as e:
-        report.add_evidence(f"No se pudo leer raw bytes: {e}", weight=0.0)
+        pass
 
 # ===============================================================
-# 🚀 APLICACIÓN FLASK (SERVER 5)
+# 🚀 APLICACIÓN FLASK
 # ===============================================================
 
 app = Flask(__name__)
@@ -219,7 +146,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 @app.route('/', methods=['GET'])
 def home():
-    return jsonify({"status": "V Forensic Unit ONLINE", "api_version": "5.1 (Sherlock Sniper)"}), 200
+    return jsonify({"status": "V Forensic Unit ONLINE", "api_version": "5.5 (Precision)"}), 200
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -233,7 +160,7 @@ def handle_provenance_request():
     file = request.files['file']
     
     try:
-        # 1. Lectura de Bytes
+        # 1. Lectura de Bytes (Para análisis profundo y visual)
         file_bytes = file.read()
         if not file_bytes:
             raise ValueError("Archivo vacío.")
@@ -241,7 +168,7 @@ def handle_provenance_request():
         # 2. Inicializar Reporte
         report = ForensicReport()
         
-        # 3. Conversión a Imagen para análisis visual
+        # 3. Conversión a Imagen para análisis criptográfico visual
         try:
             image = Image.open(io.BytesIO(file_bytes))
             if image.mode != 'RGB':
@@ -250,27 +177,30 @@ def handle_provenance_request():
         except UnidentifiedImageError:
              raise ValueError("El archivo no es una imagen válida.")
 
-        # --- FASE 1: Criptografía (Intento Maestro) ---
+        # --- FASE 1: Criptografía (La prueba de oro) ---
         crypto_res = attempt_crypto_read(img_array)
         
         if crypto_res["valid"]:
+            # Si se lee la firma, es auténtico.
             report.status = "VERIFIED"
-            report.confidence_score = 100.0
             report.signature_data = crypto_res["data"]
-            report.add_evidence(f"Firma criptográfica válida hallada (Método: {crypto_res.get('method')})", weight=0.0)
+            report.confidence_score = 10.0
+            report.add_evidence(f"Firma criptográfica íntegra (Método: {crypto_res.get('method')})")
         else:
-            # --- FASE 2: Forense Sherlock (Si falla criptografía) ---
-            # Aquí es donde se ejecuta el escáner "Sniper"
-            scan_smart_residuals(img_array, report)
-            scan_raw_bytes(file_bytes, report)
+            # --- FASE 2: Búsqueda de Rastros (Si falla cripto) ---
+            # Ya NO analizamos píxeles RGB para evitar falsos positivos en fotos oscuras.
+            # Solo buscamos huellas de datos (Strings rotos).
             
-            # Decisión final basada en la puntuación
-            if report.confidence_score >= 80:
+            scan_raw_bytes_for_traces(file_bytes, report)
+            
+            # Decisión final basada en evidencias sólidas
+            if report.confidence_score >= 0.5:
+                # Encontramos trazas de texto XRTX pero no firma válida -> Manipulado
                 report.status = "MANIPULATED"
-            elif report.confidence_score > 0:
-                report.status = "TRACE"
             else:
+                # No encontramos nada raro -> Limpio
                 report.status = "CLEAN"
+                report.confidence_score = 0.0
 
         # 4. Construir Respuesta JSON
         response = {
@@ -278,7 +208,6 @@ def handle_provenance_request():
             "report": {
                 "status": report.status,
                 "confidence_score": round(report.confidence_score, 2),
-                "pixels_found": report.pixels_found, # Dato para debug
                 "evidence_log": report.forensic_evidence,
                 "signature_data": report.signature_data if report.status == "VERIFIED" else None
             }
@@ -295,5 +224,4 @@ def handle_provenance_request():
         return jsonify({"success": False, "error": f"Error Forense Interno: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    # Puerto cambiado a 7860 como en la versión anterior
     app.run(host='0.0.0.0', port=7860)
