@@ -331,7 +331,7 @@ def create_app():
             return jsonify(file_list), 200
         except: return jsonify([]), 200
 
-    # --- UPLOAD (FIXED) ---
+    # --- ENDPOINT DE SUBIDA: FIX BIBLIOTECA (LECTURA DE isPublished) ---
     @app.route('/api/upload-file', methods=['POST'])
     def upload_user_file():
         try:
@@ -342,6 +342,7 @@ def create_app():
             description = request.form.get('description', None)
             
             # --- FIX CRÍTICO: Detectar si se publica ---
+            # El frontend envía "isPublished" como string "true" o "false"
             is_pub_str = request.form.get('isPublished', 'false').lower()
             is_published = (is_pub_str == 'true')
             
@@ -352,9 +353,15 @@ def create_app():
             if parent_id in ['null', 'undefined', '', None]:
                 root_folder = UserFile.query.filter_by(owner_username=user_id, parent_id=None, type='folder').first()
                 pid = root_folder.id if root_folder else None
-            else: pid = parent_id
+            else:
+                pid = parent_id
             
-            new_file = UserFile(owner_username=user_id, name=filename, type='file', parent_id=pid, size_bytes=file_size, storage_path=unique_name, verification_status=verification_status, description=description, is_published=is_published)
+            new_file = UserFile(
+                owner_username=user_id, name=filename, type='file', parent_id=pid, 
+                size_bytes=file_size, storage_path=unique_name, verification_status=verification_status, 
+                description=description, 
+                is_published=is_published # <--- AHORA SÍ SE GUARDA EL ESTADO
+            )
             db.session.add(new_file); db.session.commit()
             
             return jsonify({"message": "Subido", "newFile": {
@@ -466,11 +473,12 @@ def create_app():
             return jsonify({"message":"Deleted"}), 200
         return jsonify({"message":"404"}), 404
 
-    # --- DIAGNÓSTICO & UPDATES ---
+    # --- SECCIÓN DIAGNÓSTICO: LOGS, INCIDENTES Y ACTUALIZACIONES ---
+    
     @app.route('/api/logs/historical', methods=['POST', 'GET'])
     def logs(): 
         if request.method == 'GET':
-            if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Deny"}), 403
+            if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
             logs = HistoricalLog.query.order_by(HistoricalLog.date.desc()).limit(100).all()
             return jsonify([{"id": l.id, "user": l.user, "ip": l.ip, "quality": l.quality, "date": l.date.isoformat(), "filename": l.filename} for l in logs]), 200
         
@@ -488,7 +496,7 @@ def create_app():
     @app.route('/api/logs/incident', methods=['POST', 'GET'])
     def inc(): 
         if request.method == 'GET': 
-             if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Deny"}), 403
+             if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
              rs = IncidentReport.query.order_by(IncidentReport.date.desc()).limit(100).all()
              return jsonify([{"id":r.id, "user":r.user, "message":r.message, "date":r.date.isoformat(), "filename":r.filename} for r in rs]), 200
 
@@ -504,8 +512,9 @@ def create_app():
     @app.route('/api/logs/incidents', methods=['GET'])
     def incs_old(): return inc()
 
+    # --- UPLOAD UPDATES (ORIGINAL ROUTE PRESERVED) ---
     @app.route('/api/updates/upload', methods=['POST'])
-    def upload_update_file_route():
+    def upload_update_file_route_new():
         fn = secure_filename(request.headers.get('X-Vercel-Filename'))
         sp = os.path.join(UPDATES_FOLDER, fn)
         with open(sp, 'wb') as f: f.write(request.data)
@@ -518,41 +527,17 @@ def create_app():
         return jsonify({"message":"Uploaded"}), 201
 
     @app.route('/api/updates/list', methods=['GET'])
-    def list_update_files():
+    def list_update_files_new():
         us = UpdateFile.query.order_by(UpdateFile.date.desc()).all()
         return jsonify([{"id":u.id, "name":u.filename, "version":u.version} for u in us]), 200
 
     @app.route('/api/updates/check', methods=['GET'])
-    def chk():
+    def chk_new():
         lat = UpdateFile.query.order_by(UpdateFile.date.desc()).first()
         if not lat: return jsonify({"message":"No updates"}), 404
         return jsonify({"version": lat.version, "download_url": get_file_url(lat.storage_path, 'updates')}), 200
 
-    # --- PUBLIC LIBRARY FIX ---
-    @app.route('/api/biblioteca/public-files', methods=['GET'])
-    def get_public_files():
-        try:
-            # Aquí forzamos que is_published sea True
-            files = UserFile.query.filter_by(is_published=True).order_by(UserFile.created_at.desc()).all()
-            return jsonify([{
-                "id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id,
-                "size_bytes": f.size_bytes, "size": format_file_size(f.size_bytes),
-                "path": get_file_url(f.storage_path, 'uploads'),
-                "isPublished": f.is_published, "date": f.created_at.strftime('%Y-%m-%d'),
-                "verificationStatus": f.verification_status,
-                "monetization": {"enabled": f.price > 0, "price": f.price},
-                "description": f.description, "tags": f.tags.split(',') if f.tags else [],
-                "userId": f.owner_username
-            } for f in files]), 200
-        except Exception as e: return jsonify({"error": str(e)}), 500
-
-    @app.route('/api/biblioteca/profiles', methods=['GET'])
-    def get_public_profiles():
-        try:
-            users = User.query.all()
-            return jsonify([{"username":u.username.lower(), "displayName":getattr(u,'display_name',u.username.capitalize()), "avatar":getattr(u,'avatar','/user.ico')} for u in users]), 200
-        except: return jsonify([]), 200
-
+    # --- RESET MAESTRO (LIMPIA LAS 3 CARPETAS + DB) ---
     @app.route('/api/admin/reset-diagnostics', methods=['DELETE'])
     def reset_diagnostics():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg":"Auth Fail"}), 403
@@ -560,6 +545,9 @@ def create_app():
             db.session.query(HistoricalLog).delete()
             db.session.query(IncidentReport).delete()
             db.session.query(UpdateFile).delete()
+            # Opcional: Borrar tablas de analytics si quieres resetear también eso
+            # db.session.query(DownloadRecord).delete() 
+            # db.session.query(SalesRecord).delete() 
             
             for folder in [LOGS_FOLDER, INCIDENTS_FOLDER, UPDATES_FOLDER, UPDATES_TRACKING_FOLDER]:
                 for f in os.listdir(folder):
@@ -567,10 +555,9 @@ def create_app():
                     if os.path.isfile(fp): os.remove(fp)
             
             db.session.commit()
-            return jsonify({"status":"ok"}), 200
+            return jsonify({"status":"ok", "msg":"All diagnostics purged"}), 200
         except Exception as e: db.session.rollback(); return jsonify({"error":str(e)}), 500
 
-    # --- CHAT & WORKER ---
     @app.route('/api/chat/history', methods=['GET'])
     def get_chat():
         try: 
@@ -592,13 +579,17 @@ def create_app():
             return jsonify({"status":"OK"}), 200
         except: return jsonify({"error":"Fail"}), 500
 
+    # Worker Integration
     CONV_FILE = os.path.join(BASE_DIR, 'server_conversion_records.json')
     def load_recs(): 
         if not os.path.exists(CONV_FILE): return []
-        try: return json.load(open(CONV_FILE, 'r'))
+        try: 
+            with open(CONV_FILE, 'r') as f: return json.load(f)
         except: return []
     def save_conversion_records(data):
-        try: json.dump(data, open(CONV_FILE, 'w'))
+        try: 
+            with open(CONV_FILE, 'w') as f: 
+                json.dump(data, f)
         except: pass
 
     @app.route('/api/worker/check-permission', methods=['POST'])
@@ -610,7 +601,7 @@ def create_app():
     def w_log():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"status":"Fail"}), 403
         r = load_recs(); r.append(request.get_json())
-        json.dump(r[-1000:], open(CONV_FILE,'w'))
+        with open(CONV_FILE, 'w') as f: json.dump(r[-1000:], f)
         return jsonify({"status":"Recorded"}), 201
 
     @app.route('/api/worker/records', methods=['GET'])
@@ -620,6 +611,7 @@ def create_app():
 
 if __name__ == '__main__': 
     app = create_app()
+    # AUTO-SYNC DE TABLAS PARA EVITAR ERRORES DE DB
     with app.app_context():
         db.create_all()
         print(">>> DB SYNC OK <<<")
