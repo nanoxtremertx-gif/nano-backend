@@ -1,4 +1,4 @@
-# --- servidor.py --- (v27.0 - MAESTRO FINAL: SYNTAX FIX + FULL FEATURES)
+# --- servidor.py --- (v28.0 - MAESTRO FINAL: GLOBAL HELPERS + ROBUST LIBRARY + FULL SINERGIA)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -17,7 +17,7 @@ from sqlalchemy import text
 from models import db, User, UserFile, HistoricalLog, IncidentReport, UpdateFile, DocGestion
 
 # ==========================================
-# 🆕 MODELOS PARA AUDITORÍA CFO
+# 🆕 MODELOS AUDITORÍA CFO
 # ==========================================
 class DownloadRecord(db.Model):
     __tablename__ = 'download_record'
@@ -35,26 +35,37 @@ class SalesRecord(db.Model):
     amount = db.Column(db.Float)
     concept = db.Column(db.String(100))
     timestamp = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+
 # ==========================================
+# 🛠️ HELPERS GLOBALES (PARA EVITAR ERRORES DE SCOPE)
+# ==========================================
+def get_file_url(filename, folder_route='uploads'):
+    if not filename: return None
+    # Se usa request context, funcionará dentro de las rutas
+    return f"{request.host_url}{folder_route}/{filename}"
+
+def format_file_size(size_bytes):
+    if size_bytes is None: return "N/A"
+    if size_bytes < 1024: return f"{size_bytes} Bytes"
+    if size_bytes < 1048576: return f"{size_bytes/1024:.1f} KB"
+    return f"{size_bytes/1048576:.2f} MB"
 
 # --- 2. INICIALIZAR EXTENSIONES ---
 cors = CORS()
 bcrypt = Bcrypt()
 socketio = SocketIO()
 
-# --- 3. Memoria RAM ---
+# --- 3. MEMORIA ---
 ONLINE_USERS = {}
 ADMIN_SECRET_KEY = "NANO_MASTER_KEY_2025" 
 db_status = "Desconocido"
 
-# --- 4. DEFINIR LA FÁBRICA ---
+# --- 4. FÁBRICA APP ---
 def create_app():
     global db_status
-    
     app = Flask(__name__)
-    print(">>> INICIANDO SERVIDOR MAESTRO (v27.0 - Syntax Fixed) <<<")
+    print(">>> INICIANDO SERVIDOR MAESTRO (v28.0 - Global Helpers) <<<")
 
-    # --- 5. CONFIGURACIÓN ---
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
         "pool_pre_ping": True, "pool_recycle": 300, "pool_timeout": 30, "pool_size": 10, "max_overflow": 20
@@ -78,30 +89,27 @@ def create_app():
         app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///fallback.db"
         db_status = "SQLite (FALLBACK)"
 
-    # --- 6. INIT ---
     cors.init_app(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
     socketio.init_app(app, cors_allowed_origins="*")
     bcrypt.init_app(app)
     db.init_app(app)
 
-    # --- 7. DIRECTORIOS (ESTRUCTURA 3 CARPETAS) ---
+    # --- DIRECTORIOS ---
     BASE_DIR = os.getcwd()
     
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
     AVATARS_FOLDER = os.path.join(UPLOAD_FOLDER, 'avatars')
     DOCS_FOLDER = os.path.join(BASE_DIR, 'documentos_gestion')
     BIBLIOTECA_PUBLIC_FOLDER = os.path.join(BASE_DIR, 'biblioteca_publica')
-
-    # Carpetas Diagnóstico
+    
+    # Diagnóstico
     LOGS_FOLDER = os.path.join(BASE_DIR, 'logs_historical')       
     INCIDENTS_FOLDER = os.path.join(BASE_DIR, 'logs_incidents')   
     UPDATES_FOLDER = os.path.join(BASE_DIR, 'updates_system')     
     UPDATES_TRACKING_FOLDER = os.path.join(UPDATES_FOLDER, 'download_tracking')
 
-    ALL_FOLDERS = [
-        UPLOAD_FOLDER, AVATARS_FOLDER, DOCS_FOLDER, BIBLIOTECA_PUBLIC_FOLDER,
-        LOGS_FOLDER, INCIDENTS_FOLDER, UPDATES_FOLDER, UPDATES_TRACKING_FOLDER
-    ]
+    ALL_FOLDERS = [UPLOAD_FOLDER, AVATARS_FOLDER, DOCS_FOLDER, BIBLIOTECA_PUBLIC_FOLDER, 
+                   LOGS_FOLDER, INCIDENTS_FOLDER, UPDATES_FOLDER, UPDATES_TRACKING_FOLDER]
     for folder in ALL_FOLDERS: os.makedirs(folder, exist_ok=True)
 
     SUB_DOC_FOLDERS = ['desarrollo', 'gestion', 'operaciones']
@@ -118,41 +126,24 @@ def create_app():
         except Exception as e:
             print(f"Error DB Tracking: {e}")
 
-    # --- Helpers Normales ---
     def emit_online_count():
-        try: 
-            socketio.emit('update_online_count', {'count': len(ONLINE_USERS)})
-        except: 
-            pass
+        try: socketio.emit('update_online_count', {'count': len(ONLINE_USERS)})
+        except: pass
 
-    def get_file_url(filename, folder_route='uploads'):
-        if not filename: return None
-        return f"{request.host_url}{folder_route}/{filename}"
-
-    def format_file_size(size_bytes):
-        if size_bytes is None: return "N/A"
-        if size_bytes < 1024: return f"{size_bytes} Bytes"
-        if size_bytes < 1048576: return f"{size_bytes/1024:.1f} KB"
-        return f"{size_bytes/1048576:.2f} MB"
-
-    # --- HEALTH (CORREGIDO EL ERROR DE SINTAXIS AQUÍ) ---
+    # --- RUTAS ---
     @app.route('/')
-    def index():
-        return jsonify({"status": "v27.0 ONLINE", "db": db_status}), 200
+    def index(): return jsonify({"status": "v28.0 ONLINE", "db": db_status}), 200
     
     @app.route('/health')
-    def health(): 
-        return jsonify({"status": "ALIVE"}), 200
+    def health(): return jsonify({"status": "ALIVE"}), 200
 
-    # --- RUTAS DE DESCARGA (CON TRACKING) ---
     @app.route('/uploads/<path:filename>')
     def download_user_file(filename): 
         track_download_db(filename, 'user_file')
         return send_from_directory(UPLOAD_FOLDER, filename)
 
     @app.route('/uploads/avatars/<path:filename>')
-    def download_avatar(filename): 
-        return send_from_directory(AVATARS_FOLDER, filename)
+    def download_avatar(filename): return send_from_directory(AVATARS_FOLDER, filename)
 
     @app.route('/logs_historical/<path:filename>')
     def download_log_file(filename): 
@@ -175,54 +166,36 @@ def create_app():
         track_download_db(filename, 'public_lib')
         return send_from_directory(BIBLIOTECA_PUBLIC_FOLDER, filename)
     
-    # --- RUTA DE DESCARGA DE ACTUALIZACIONES (DOBLE TRACKING) ---
     @app.route('/updates/<path:filename>')
     def download_update_file(filename):
-        # 1. CFO Tracking
         track_download_db(filename, 'system_update')
-
-        # 2. File Tracking Interno (Txt)
         try:
             requester_ip = request.remote_addr
             requester_user = request.args.get('user', 'Anonimo')
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             log_line = f"[{timestamp}] IP: {requester_ip} - User: {requester_user} - Downloaded: {filename}\n"
-            
             tracking_file = os.path.join(UPDATES_TRACKING_FOLDER, f"track_{filename}.txt")
-            with open(tracking_file, "a") as f:
-                f.write(log_line)
-        except: 
-            pass
-
+            with open(tracking_file, "a") as f: f.write(log_line)
+        except: pass
         return send_from_directory(UPDATES_FOLDER, filename)
 
-    # --- API CFO ANALYTICS ---
+    # --- API CFO ---
     @app.route('/api/cfo/analytics', methods=['GET'])
     def get_cfo_analytics():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Deny"}), 403
         try:
             total_dls = DownloadRecord.query.count()
             total_sales = db.session.query(db.func.sum(SalesRecord.amount)).scalar() or 0.0
-            
-            top = db.session.query(DownloadRecord.user_id, db.func.count(DownloadRecord.id))\
-                    .group_by(DownloadRecord.user_id)\
-                    .order_by(db.func.count(DownloadRecord.id).desc()).limit(5).all()
+            top = db.session.query(DownloadRecord.user_id, db.func.count(DownloadRecord.id)).group_by(DownloadRecord.user_id).order_by(db.func.count(DownloadRecord.id).desc()).limit(5).all()
             top_users = [{"user": r[0], "count": r[1]} for r in top]
-            
             recents = DownloadRecord.query.order_by(DownloadRecord.timestamp.desc()).limit(50).all()
             recent_list = [{"user": r.user_id, "file": r.filename, "type": r.category, "date": r.timestamp.isoformat()} for r in recents]
-
-            return jsonify({
-                "total_downloads": total_dls,
-                "total_sales": total_sales,
-                "top_users": top_users,
-                "recent_downloads": recent_list
-            }), 200
+            return jsonify({"total_downloads": total_dls, "total_sales": total_sales, "top_users": top_users, "recent_downloads": recent_list}), 200
         except Exception as e: return jsonify({"error": str(e)}), 500
 
     @app.route('/admin/create_tables', methods=['GET'])
     def create_tables():
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
+        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Deny"}), 403
         try:
             with app.app_context(): db.create_all()
             return jsonify({"message": "Tablas actualizadas."}), 200
@@ -234,13 +207,12 @@ def create_app():
     @socketio.on('disconnect')
     def handle_disconnect(): pass
 
-    # --- AUTH Y GESTIÓN ---
+    # --- AUTH ---
     @app.route('/api/register', methods=['POST'])
     def register():
         d = request.get_json()
         if User.query.filter_by(username=d.get('username')).first(): return jsonify({"message": "Usuario ocupado"}), 409
         if User.query.filter_by(email=d.get('email')).first(): return jsonify({"message": "Email ocupado"}), 409
-        
         new_user = User(username=d.get('username'), hash=bcrypt.generate_password_hash(d.get('password')).decode('utf-8'), email=d.get('email'), identificador=d.get('identificador'), role="gratis", fingerprint=d.get('username').lower(), display_name=d.get('username').capitalize(), bio="Nuevo usuario", avatar="/user.ico")
         try:
             db.session.add(new_user); db.session.commit()
@@ -301,7 +273,7 @@ def create_app():
 
     @app.route('/api/admin/users', methods=['GET'])
     def admin_list():
-        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
+        if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Deny"}), 403
         try: users = User.query.all(); return jsonify([{"username":u.username, "email":u.email, "role":u.role, "identificador":u.identificador, "subscriptionEndDate":u.subscription_end} for u in users]), 200
         except Exception as e: return jsonify({"error": str(e)}), 500
 
@@ -359,7 +331,7 @@ def create_app():
             return jsonify(file_list), 200
         except: return jsonify([]), 200
 
-    # --- ENDPOINT DE SUBIDA: FIX BIBLIOTECA (LECTURA DE isPublished) ---
+    # --- UPLOAD (FIXED) ---
     @app.route('/api/upload-file', methods=['POST'])
     def upload_user_file():
         try:
@@ -380,15 +352,9 @@ def create_app():
             if parent_id in ['null', 'undefined', '', None]:
                 root_folder = UserFile.query.filter_by(owner_username=user_id, parent_id=None, type='folder').first()
                 pid = root_folder.id if root_folder else None
-            else:
-                pid = parent_id
+            else: pid = parent_id
             
-            new_file = UserFile(
-                owner_username=user_id, name=filename, type='file', parent_id=pid, 
-                size_bytes=file_size, storage_path=unique_name, verification_status=verification_status, 
-                description=description, 
-                is_published=is_published # <--- AHORA SÍ SE GUARDA EL ESTADO
-            )
+            new_file = UserFile(owner_username=user_id, name=filename, type='file', parent_id=pid, size_bytes=file_size, storage_path=unique_name, verification_status=verification_status, description=description, is_published=is_published)
             db.session.add(new_file); db.session.commit()
             
             return jsonify({"message": "Subido", "newFile": {
@@ -500,12 +466,11 @@ def create_app():
             return jsonify({"message":"Deleted"}), 200
         return jsonify({"message":"404"}), 404
 
-    # --- SECCIÓN DIAGNÓSTICO: LOGS, INCIDENTES Y ACTUALIZACIONES ---
-    
+    # --- DIAGNÓSTICO & UPDATES ---
     @app.route('/api/logs/historical', methods=['POST', 'GET'])
     def logs(): 
         if request.method == 'GET':
-            if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
+            if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Deny"}), 403
             logs = HistoricalLog.query.order_by(HistoricalLog.date.desc()).limit(100).all()
             return jsonify([{"id": l.id, "user": l.user, "ip": l.ip, "quality": l.quality, "date": l.date.isoformat(), "filename": l.filename} for l in logs]), 200
         
@@ -523,7 +488,7 @@ def create_app():
     @app.route('/api/logs/incident', methods=['POST', 'GET'])
     def inc(): 
         if request.method == 'GET': 
-             if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Acceso denegado"}), 403
+             if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg": "Deny"}), 403
              rs = IncidentReport.query.order_by(IncidentReport.date.desc()).limit(100).all()
              return jsonify([{"id":r.id, "user":r.user, "message":r.message, "date":r.date.isoformat(), "filename":r.filename} for r in rs]), 200
 
@@ -539,9 +504,8 @@ def create_app():
     @app.route('/api/logs/incidents', methods=['GET'])
     def incs_old(): return inc()
 
-    # --- UPLOAD UPDATES (ORIGINAL ROUTE PRESERVED) ---
     @app.route('/api/updates/upload', methods=['POST'])
-    def upload_update_file_route_new():
+    def upload_update_file_route():
         fn = secure_filename(request.headers.get('X-Vercel-Filename'))
         sp = os.path.join(UPDATES_FOLDER, fn)
         with open(sp, 'wb') as f: f.write(request.data)
@@ -554,17 +518,41 @@ def create_app():
         return jsonify({"message":"Uploaded"}), 201
 
     @app.route('/api/updates/list', methods=['GET'])
-    def list_update_files_new():
+    def list_update_files():
         us = UpdateFile.query.order_by(UpdateFile.date.desc()).all()
         return jsonify([{"id":u.id, "name":u.filename, "version":u.version} for u in us]), 200
 
     @app.route('/api/updates/check', methods=['GET'])
-    def chk_new():
+    def chk():
         lat = UpdateFile.query.order_by(UpdateFile.date.desc()).first()
         if not lat: return jsonify({"message":"No updates"}), 404
         return jsonify({"version": lat.version, "download_url": get_file_url(lat.storage_path, 'updates')}), 200
 
-    # --- RESET MAESTRO (LIMPIA LAS 3 CARPETAS + DB) ---
+    # --- PUBLIC LIBRARY FIX ---
+    @app.route('/api/biblioteca/public-files', methods=['GET'])
+    def get_public_files():
+        try:
+            # Aquí forzamos que is_published sea True
+            files = UserFile.query.filter_by(is_published=True).order_by(UserFile.created_at.desc()).all()
+            return jsonify([{
+                "id": f.id, "name": f.name, "type": f.type, "parentId": f.parent_id,
+                "size_bytes": f.size_bytes, "size": format_file_size(f.size_bytes),
+                "path": get_file_url(f.storage_path, 'uploads'),
+                "isPublished": f.is_published, "date": f.created_at.strftime('%Y-%m-%d'),
+                "verificationStatus": f.verification_status,
+                "monetization": {"enabled": f.price > 0, "price": f.price},
+                "description": f.description, "tags": f.tags.split(',') if f.tags else [],
+                "userId": f.owner_username
+            } for f in files]), 200
+        except Exception as e: return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/biblioteca/profiles', methods=['GET'])
+    def get_public_profiles():
+        try:
+            users = User.query.all()
+            return jsonify([{"username":u.username.lower(), "displayName":getattr(u,'display_name',u.username.capitalize()), "avatar":getattr(u,'avatar','/user.ico')} for u in users]), 200
+        except: return jsonify([]), 200
+
     @app.route('/api/admin/reset-diagnostics', methods=['DELETE'])
     def reset_diagnostics():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"msg":"Auth Fail"}), 403
@@ -572,9 +560,6 @@ def create_app():
             db.session.query(HistoricalLog).delete()
             db.session.query(IncidentReport).delete()
             db.session.query(UpdateFile).delete()
-            # Opcional: Borrar tablas de analytics si quieres resetear también eso
-            # db.session.query(DownloadRecord).delete() 
-            # db.session.query(SalesRecord).delete() 
             
             for folder in [LOGS_FOLDER, INCIDENTS_FOLDER, UPDATES_FOLDER, UPDATES_TRACKING_FOLDER]:
                 for f in os.listdir(folder):
@@ -582,9 +567,10 @@ def create_app():
                     if os.path.isfile(fp): os.remove(fp)
             
             db.session.commit()
-            return jsonify({"status":"ok", "msg":"All diagnostics purged"}), 200
+            return jsonify({"status":"ok"}), 200
         except Exception as e: db.session.rollback(); return jsonify({"error":str(e)}), 500
 
+    # --- CHAT & WORKER ---
     @app.route('/api/chat/history', methods=['GET'])
     def get_chat():
         try: 
@@ -606,18 +592,13 @@ def create_app():
             return jsonify({"status":"OK"}), 200
         except: return jsonify({"error":"Fail"}), 500
 
-    # Worker Integration
     CONV_FILE = os.path.join(BASE_DIR, 'server_conversion_records.json')
     def load_recs(): 
         if not os.path.exists(CONV_FILE): return []
-        try: 
-            with open(CONV_FILE, 'r') as f: return json.load(f)
+        try: return json.load(open(CONV_FILE, 'r'))
         except: return []
-    
     def save_conversion_records(data):
-        try: 
-            with open(CONV_FILE, 'w') as f: 
-                json.dump(data, f)
+        try: json.dump(data, open(CONV_FILE, 'w'))
         except: pass
 
     @app.route('/api/worker/check-permission', methods=['POST'])
@@ -629,7 +610,7 @@ def create_app():
     def w_log():
         if request.headers.get('X-Admin-Key') != ADMIN_SECRET_KEY: return jsonify({"status":"Fail"}), 403
         r = load_recs(); r.append(request.get_json())
-        with open(CONV_FILE, 'w') as f: json.dump(r[-1000:], f)
+        json.dump(r[-1000:], open(CONV_FILE,'w'))
         return jsonify({"status":"Recorded"}), 201
 
     @app.route('/api/worker/records', methods=['GET'])
@@ -639,7 +620,6 @@ def create_app():
 
 if __name__ == '__main__': 
     app = create_app()
-    # AUTO-SYNC DE TABLAS PARA EVITAR ERRORES DE DB
     with app.app_context():
         db.create_all()
         print(">>> DB SYNC OK <<<")
